@@ -1,0 +1,130 @@
+# tonematch project configuration.
+# Copy to your project folder (`tonematch init`) and edit. Parameter `pattern`s are
+# case-insensitive regexes matched against the plugin parameter names that Live
+# exposes; run `tonematch discover` to see the real names and fix any that do not
+# resolve. Values in `range` are normalized 0..1 of the parameter's native range.
+
+[project]
+reference = "reference.mp3"      # the song you want to match
+midi = "song.mid"                # MIDI rendition (drums, bass, one guitar part)
+workdir = "work"                 # analysis cache, checkpoints, recordings
+outdir = "out"                   # presets, report
+
+[analysis]
+separator = "demucs"             # "demucs" (htdemucs_6s) or "none" (provide [analysis.stems])
+demucs_model = "htdemucs_6s"
+region_bars = 8                  # length of the comparison region(s)
+regions = 2                      # how many regions (densest + most contrasting)
+# stems = { drums = "stems/drums.wav", bass = "stems/bass.wav", guitar = "stems/guitar.wav" }
+
+[match]
+headroom_db = 6.0                # pre-master headroom; the master stage restores loudness
+tone_trials = 40                 # optuna trials = real-time takes (all tracks recorded per take)
+tone_regions = 1                 # regions used per tone take (more = slower, more robust)
+level_tolerance_db = 0.5
+eq_bands = 6                     # EQ Eight bands used for residual correction
+eq_max_gain_db = 6.0
+seed = 7
+
+# ---------------------------------------------------------------- tracks
+# role: which MIDI part feeds the track; stem: which reference stem it is scored against.
+
+[[tracks]]
+name = "Drums"
+role = "drums"
+stem = "drums"
+instrument = "kontakt"           # Kontakt: load MixWave Gojira inside it by hand
+chain = ["EQ Eight", "Glue Compressor", "Utility"]
+pan = 0.0
+# Optional Kontakt multi-outs. Each becomes an audio track fed from the Drums track;
+# the optimizer then balances the mics via each out's Utility gain.
+# outputs = [
+#   { name = "Kick",  channel = "3/4" },
+#   { name = "Snare", channel = "5/6" },
+#   { name = "Toms",  channel = "7/8" },
+#   { name = "OH",    channel = "9/10" },
+#   { name = "Room",  channel = "11/12" },
+# ]
+# Remap MIDI drum notes if your MIDI uses a different map than MixWave (keys are strings in TOML):
+# note_map = { "36" = 36, "38" = 38 }
+
+[[tracks]]
+name = "Bass"
+role = "bass"
+stem = "bass"
+instrument = "kontakt"           # Kontakt: load the NI Rickenbacker bass inside it by hand
+chain = ["Pedal", "EQ Eight", "Compressor", "Utility"]
+pan = 0.0
+
+[[tracks]]
+name = "Gtr L"
+role = "guitar"
+stem = "guitar"
+instrument = "hellrazer"
+chain = ["archetype_gojira", "EQ Eight", "Utility"]
+pan = -1.0
+double_of = ""                   # this is the original take
+
+[[tracks]]
+name = "Gtr R"
+role = "guitar"
+stem = "guitar"
+instrument = "metal_eclipse"
+chain = ["archetype_gojira", "EQ Eight", "Utility"]
+pan = 1.0
+double_of = "Gtr L"              # same MIDI, humanized so the double sounds real
+humanize = { timing_ms = 12.0, velocity = 8, seed = 3 }
+
+[master]
+chain = ["EQ Eight", "Glue Compressor", "Limiter"]
+
+# ---------------------------------------------------------------- plugins
+# `search` is the name looked up in Live's Plug-ins browser.
+
+[plugins.kontakt]
+search = "Kontakt"
+params = []
+
+[plugins.hellrazer]
+search = "Hellrazer"
+params = [
+  { key = "pickup", pattern = "pickup|pu ?select", kind = "categorical" },
+  { key = "tone", pattern = "^tone", kind = "continuous", range = [0.3, 1.0] },
+]
+
+[plugins.metal_eclipse]
+search = "Metal Eclipse"
+params = [
+  { key = "pickup", pattern = "pickup|pu ?select", kind = "categorical" },
+  { key = "tone", pattern = "^tone", kind = "continuous", range = [0.3, 1.0] },
+]
+
+[plugins.archetype_gojira]
+search = "Archetype Gojira"
+# `{amp}` is replaced by the display label of the chosen `amp` (e.g. "Rust"), so
+# only the selected amp's knobs are optimized.
+params = [
+  { key = "amp",      pattern = "amp ?(type|select|model|channel)", kind = "categorical" },
+  { key = "cab_mic",  pattern = "(cab|mic).*(type|model|select)", kind = "categorical" },
+  { key = "gain",     pattern = "{amp}.*gain|amp.*gain", kind = "continuous", range = [0.3, 0.95] },
+  { key = "bass",     pattern = "{amp}.*bass|amp.*bass", kind = "continuous", range = [0.2, 0.8] },
+  { key = "mid",      pattern = "{amp}.*mid|amp.*mid", kind = "continuous", range = [0.2, 0.8] },
+  { key = "treble",   pattern = "{amp}.*treble|amp.*treble", kind = "continuous", range = [0.2, 0.8] },
+  { key = "presence", pattern = "{amp}.*presence|presence", kind = "continuous", range = [0.2, 0.8] },
+  { key = "depth",    pattern = "{amp}.*depth|depth", kind = "continuous", range = [0.2, 0.8] },
+  { key = "mic_pos",  pattern = "mic.*(position|pos)", kind = "continuous", range = [0.0, 1.0] },
+  { key = "mic_dist", pattern = "mic.*dist", kind = "continuous", range = [0.0, 1.0] },
+  { key = "gate",     pattern = "gate.*thresh", kind = "continuous", range = [0.2, 0.7] },
+]
+
+# Live stock devices (names as Live 12 shows them).
+[plugins.Pedal]
+search = "Pedal"
+params = [
+  { key = "type",   pattern = "^type$", kind = "categorical" },
+  { key = "gain",   pattern = "^gain$", kind = "continuous", range = [0.0, 0.8] },
+  { key = "bass",   pattern = "^bass$", kind = "continuous", range = [0.2, 0.8] },
+  { key = "mid",    pattern = "^mid$", kind = "continuous", range = [0.2, 0.8] },
+  { key = "treble", pattern = "^treble$", kind = "continuous", range = [0.2, 0.8] },
+  { key = "mix",    pattern = "dry/wet", kind = "continuous", range = [0.0, 0.7] },
+]

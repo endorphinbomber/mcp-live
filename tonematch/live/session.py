@@ -40,6 +40,17 @@ def parse_display(text: str) -> float:
     return v * 1000 if m.group(2).lower() == "k" else v
 
 
+def _best_match(matches: list[dict], search: str) -> str | None:
+    """Exact name first, then devices, then VST3 over VST2/AU duplicates, then shortest name."""
+    matches = [m for m in matches if m.get("uri")]
+    if not matches:
+        return None
+    s = search.lower()
+    matches.sort(key=lambda m: (m["name"].lower() != s, not m.get("is_device", True),
+                                "vst3" not in m["uri"].lower(), len(m["name"])))
+    return matches[0]["uri"]
+
+
 class LiveSession:
     def __init__(self, client: LiveClient):
         self.c = client
@@ -71,27 +82,61 @@ class LiveSession:
         return names.index(name) if name in names else self.create_track(name, midi)
 
     # -- devices -------------------------------------------------------
-    def find_browser_item(self, search: str, stock: bool) -> str:
+    def find_browser_item(self, search: str, stock: bool, uri: str = "") -> str:
+        """Browser URI for a device/plug-in. Plug-in lookup does not rely on `is_device`
+        (Live reports False for some VST3s) and falls back to walking the Plug-ins tree."""
+        if uri:
+            return uri
         categories = ["audio_effects", "instruments"] if stock else ["plugins"]
+        errors: list[str] = []
         for cat in categories:
             try:
                 r = self.c.send("search_browser", query=search, category=cat, max_results=50)
-            except LiveError:
+            except LiveError as e:
+                errors.append(f"search in {cat}: {e}")
                 continue
-            matches = [m for m in r.get("matches", []) if m.get("is_device", True)]
-            exact = [m for m in matches if m["name"].lower() == search.lower()]
-            # Prefer VST3 over VST2/AU duplicates of the same plugin.
-            pool = exact or matches
-            pool.sort(key=lambda m: (0 if "vst3" in m["uri"].lower() else 1, len(m["name"])))
-            if pool:
-                return pool[0]["uri"]
-        raise LiveError(
-            f"'{search}' not found in Live's browser ({'/'.join(categories)}). For plug-ins, "
-            "enable VST3/AU in Settings > Plug-Ins and rescan."
-        )
+            hit = _best_match(r.get("matches", []), search)
+            if hit:
+                return hit
+        if not stock:
+            try:
+                hit = _best_match([i for i in self.walk_plugins(search) if i["is_loadable"]], search)
+            except LiveError as e:
+                errors.append(f"walking plugins: {e}")
+                hit = None
+            if hit:
+                return hit
+        detail = f" ({'; '.join(errors)})" if errors else ""
+        hint = (f" Run `tonematch plugins` to list what Live's Plug-ins browser shows, then set "
+                f"`search` (or `uri`) for this plug-in in tonematch.toml. If Kontakt is missing there, "
+                f"enable 'Use VST3 Plug-in System Folders' (and the VST2 custom folder if you use the "
+                f"VST2 version) in Settings > Plug-Ins and click Rescan." if not stock else "")
+        raise LiveError(f"'{search}' not found in Live's browser ({'/'.join(categories)}){detail}.{hint}")
 
-    def load_device(self, track_index: int, search: str, stock: bool) -> None:
-        uri = self.find_browser_item(search, stock)
+    def walk_plugins(self, query: str = "", max_depth: int = 4, limit: int = 2000) -> list[dict]:
+        """Breadth-first listing of Live's Plug-ins browser (path, name, uri, is_loadable)."""
+        out: list[dict] = []
+        queue = [("plugins", 0)]
+        q = query.lower()
+        while queue and len(out) < limit:
+            path, depth = queue.pop(0)
+            r = self.c.send("get_browser_items_at_path", path=path)
+            if r.get("error"):
+                if path == "plugins":
+                    raise LiveError(f"{r['error']} (available: {r.get('available_categories')})")
+                continue
+            for item in r.get("items", []):
+                name = item.get("name", "")
+                child = f"{path}/{name}"
+                if item.get("is_loadable") and (not q or q in name.lower()):
+                    out.append({"path": child, "name": name, "uri": item.get("uri"),
+                                "is_loadable": True, "is_device": bool(item.get("is_device"))})
+                if item.get("is_folder") and depth + 1 < max_depth and "/" not in name:
+                    queue.append((child, depth + 1))
+        return out
+
+    def load_device(self, track_index: int, search: str, stock: bool, uri: str = "") -> None:
+        uri = self.find_browser_item(search, stock, uri)
         if track_index < 0:
             self.c.send("load_device_to_master", item_uri=uri)
         else:

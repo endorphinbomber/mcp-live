@@ -82,7 +82,8 @@ chain = ["EQ Eight", "Glue Compressor", "Limiter"]
 # `search` is the name looked up in Live's Plug-ins browser.
 
 [plugins.kontakt]
-search = "Kontakt"
+search = "Kontakt"               # matched against Live's Plug-ins browser; see `tonematch plugins kontakt`
+# uri = "..."                    # or pin the exact browser URI printed by `tonematch plugins`
 params = []
 
 [plugins.hellrazer]

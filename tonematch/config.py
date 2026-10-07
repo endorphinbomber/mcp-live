@@ -39,6 +39,7 @@ class PluginSpec:
     name: str
     search: str
     params: list[ParamSpec] = field(default_factory=list)
+    uri: str = ""            # exact browser URI (from `tonematch plugins`); skips the search
 
     @property
     def is_stock(self) -> bool:
@@ -135,6 +136,7 @@ def parse_config(raw: dict[str, Any], root: Path) -> Config:
             name=key,
             search=spec.get("search", key),
             params=[ParamSpec.from_dict(p) for p in spec.get("params", [])],
+            uri=spec.get("uri", ""),
         )
         for key, spec in raw.get("plugins", {}).items()
     }

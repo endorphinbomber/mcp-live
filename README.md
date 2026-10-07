@@ -117,6 +117,19 @@ Register both MCP servers (e.g. Claude Desktop `claude_desktop_config.json`):
 Claude can then run `tonematch_analyze` → `tonematch_build` → `tonematch_discover` → `tonematch_match`,
 and use the ableton tools for anything by hand. Needs `pip install -e ".[mcp]"`.
 
+## Troubleshooting
+
+**"'Kontakt' not found in Live's browser"**: run `tonematch plugins kontakt`. It lists what Live's
+Plug-ins browser actually contains, with each item's path and URI.
+- **Nothing listed:** Live hasn't scanned the plug-in. Go to Settings → Plug-Ins, turn on *Use VST3
+  Plug-in System Folders* (Kontakt's VST3 lives in `C:\Program Files\Common Files\VST3`), and/or
+  set the VST2 custom folder. Click *Rescan*, then check it shows under Plug-ins in Live's browser.
+- **Listed under another name** (e.g. "Kontakt 7"): set `search = "Kontakt 7"`, or copy the line
+  `uri = "..."`, into `[plugins.kontakt]` in `tonematch.toml`.
+
+The same applies to Archetype, Hellrazer and Metal Eclipse. `tonematch doctor` checks every plug-in in
+your config. `build` can be re-run after a failure: tracks that already exist are reused.
+
 ## Limitations
 
 - Stem separation of a mastered MP3 isn't perfect. Bass bleeds into guitar and cymbals into everything,

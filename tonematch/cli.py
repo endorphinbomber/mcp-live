@@ -37,11 +37,20 @@ def cmd_doctor(args) -> int:
             info = c.send("get_session_info")
             print(f"Live {info.get('live_version')} / bridge {info.get('bridge_version')}: "
                   f"{info.get('track_count')} tracks, {info.get('tempo')} BPM")
-            for name in ("Archetype Gojira", "Hellrazer", "Metal Eclipse", "Kontakt"):
-                r = c.send("search_browser", query=name, category="plugins", max_results=5)
-                hits = [m["name"] for m in r.get("matches", [])]
-                print(f"  plug-in '{name}': {hits[0] if hits else 'NOT FOUND'}")
-                ok &= bool(hits)
+            from .config import load_config
+            from .live.session import LiveSession
+            cfg = load_config(args.config if Path(args.config).exists() else None)
+            live = LiveSession(c)
+            for key in sorted({d for t in cfg.tracks for d in t.device_names}):
+                spec = cfg.plugin(key)
+                if spec.is_stock:
+                    continue
+                try:
+                    uri = live.find_browser_item(spec.search, stock=False, uri=spec.uri)
+                    print(f"  plug-in '{spec.search}': found ({uri})")
+                except LiveError as e:
+                    print(f"  plug-in '{spec.search}': NOT FOUND - {e}")
+                    ok = False
     except LiveError as e:
         print(e)
         return 2
@@ -52,6 +61,20 @@ def cmd_doctor(args) -> int:
         except ImportError:
             print(f"  {mod}: not installed (pip install 'tonematch[separate]')")
     return 0 if ok else 1
+
+
+def cmd_plugins(args) -> int:
+    from .live.session import LiveSession
+    with LiveClient(port=args.port) as c:
+        items = LiveSession(c).walk_plugins(args.query or "")
+    if not items:
+        print("Live's Plug-ins browser shows nothing" + (f" matching '{args.query}'" if args.query else "")
+              + ". Check Settings > Plug-Ins (VST3 system folders / VST2 custom folder) and Rescan.")
+        return 1
+    for i in items:
+        print(f"{i['path']}\n    uri = \"{i['uri']}\"")
+    print("\nPut the name in `search = \"...\"` (or the exact `uri = \"...\"`) under [plugins.<name>] in tonematch.toml.")
+    return 0
 
 
 def cmd_analyze(args) -> int:
@@ -127,6 +150,9 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("init", help="write a tonematch.toml to edit").set_defaults(fn=cmd_init)
     sub.add_parser("doctor", help="check Live connection and plug-ins").set_defaults(fn=cmd_doctor)
+    pl = sub.add_parser("plugins", help="list Live's Plug-ins browser (optionally filtered)")
+    pl.add_argument("query", nargs="?")
+    pl.set_defaults(fn=cmd_plugins)
     sub.add_parser("analyze", help="separate stems, align MIDI, measure the reference").set_defaults(fn=cmd_analyze)
     sub.add_parser("build", help="create tracks/devices/MIDI in Live").set_defaults(fn=cmd_build)
     sub.add_parser("discover", help="list plug-in parameters and pattern matches").set_defaults(fn=cmd_discover)

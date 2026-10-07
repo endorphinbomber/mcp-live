@@ -210,7 +210,7 @@ class Project:
         for k in keys:
             spec = self.cfg.plugin(k)
             self.echo(f"  {track_name}: loading {spec.search}")
-            self.live.load_device(track_index, spec.search, stock=spec.is_stock)
+            self.live.load_device(track_index, spec.search, stock=spec.is_stock, uri=spec.uri)
         loaded = self.live.devices(track_index)
         if len(loaded) != len(keys):
             raise LiveError(f"'{track_name}': expected {len(keys)} devices, Live shows "

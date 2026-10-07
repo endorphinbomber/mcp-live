@@ -135,6 +135,8 @@ class FakeLive:
         self.takes = 0
         self.commands: list[str] = []
         self.seconds = SECONDS
+        self.search_hides: set[str] = set()      # plug-ins search_browser fails to return
+        self.plugins_not_device: set[str] = set()  # plug-ins Live reports with is_device=False
 
     # ------------------------------------------------------------ audio model
     def source(self, t: Track) -> np.ndarray:
@@ -275,9 +277,21 @@ class FakeLive:
             return {"deleted": True}
         if cmd == "search_browser":
             names = CATALOG.get(p.get("category") or "", sum(CATALOG.values(), []))
-            hits = [{"name": n, "uri": f"query:{p.get('category')}#{n}", "is_device": True}
-                    for n in names if p["query"].lower() in n.lower()]
+            hits = [{"name": n, "uri": f"query:{p.get('category')}#{n}", "is_device": n not in self.plugins_not_device}
+                    for n in names if p["query"].lower() in n.lower() and n not in self.search_hides]
             return {"matches": hits}
+        if cmd == "get_browser_items_at_path":
+            parts = p["path"].split("/")
+            if parts[0] != "plugins":
+                return {"path": p["path"], "error": "Unknown or unavailable category", "items": []}
+            folder = lambda n: {"name": n, "is_folder": True, "is_device": False, "is_loadable": False, "uri": None}
+            if len(parts) == 1:
+                return {"items": [folder("VST3")]}
+            if parts[1:] == ["VST3"]:
+                return {"items": [folder("Native Instruments"), folder("Other")]}
+            vendor = {"Native Instruments": ["Kontakt 8"]}.get(parts[2], [n for n in CATALOG["plugins"] if n != "Kontakt 8"]) if len(parts) == 3 else []
+            return {"items": [{"name": n, "is_folder": False, "is_device": n not in self.plugins_not_device,
+                               "is_loadable": True, "uri": f"query:plugins#{n}"} for n in vendor]}
         if cmd == "load_browser_item":
             self.t(p["track_index"]).devices.append(make_device(p["item_uri"].split("#", 1)[1]))
             return {"loaded": True}

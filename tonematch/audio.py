@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import numpy as np
@@ -11,15 +12,29 @@ import soundfile as sf
 from scipy.signal import resample_poly
 
 ANALYSIS_SR = 44100
+# Formats libsndfile reads; anything else (MP3 on old libsndfile, AAC...) goes through ffmpeg.
+SNDFILE_FORMATS = {".wav", ".wave", ".aif", ".aiff", ".flac", ".ogg", ".caf", ".w64", ".rf64"}
 
 
-def load_audio(path: str | Path, sr: int = ANALYSIS_SR) -> np.ndarray:
-    """Load any audio file as float32 stereo (n, 2) at `sr`."""
+def load_audio(path: str | Path, sr: int = ANALYSIS_SR, retries: int = 5) -> np.ndarray:
+    """Load any audio file as float32 stereo (n, 2) at `sr`.
+
+    A file another program still has open (Live finishing a recording; on Windows that
+    is a hard lock) is retried with backoff instead of failing on the first attempt."""
     path = Path(path)
-    try:
-        data, file_sr = sf.read(str(path), dtype="float32", always_2d=True)
-    except Exception:
-        data, file_sr = _ffmpeg_decode(path)
+    delay = 0.25
+    for attempt in range(retries + 1):
+        try:
+            data, file_sr = sf.read(str(path), dtype="float32", always_2d=True)
+            break
+        except (RuntimeError, OSError) as e:   # LibsndfileError is a RuntimeError
+            if path.suffix.lower() not in SNDFILE_FORMATS:
+                data, file_sr = _ffmpeg_decode(path)
+                break
+            if attempt == retries:
+                raise OSError(f"Cannot read {path}: {e}") from None
+            time.sleep(delay)
+            delay = min(2.0, delay * 2)
     if data.shape[1] == 1:
         data = np.repeat(data, 2, axis=1)
     elif data.shape[1] > 2:
@@ -28,6 +43,31 @@ def load_audio(path: str | Path, sr: int = ANALYSIS_SR) -> np.ndarray:
         g = np.gcd(int(file_sr), int(sr))
         data = resample_poly(data, sr // g, int(file_sr) // g, axis=0).astype(np.float32)
     return data
+
+
+def wait_until_readable(path: str | Path, timeout: float = 30.0, interval: float = 0.3) -> None:
+    """Block until a file that is being written (e.g. a Live recording) is complete:
+    it exists, its size is stable across two checks and libsndfile can open it."""
+    path = Path(path)
+    deadline = time.monotonic() + timeout
+    last_size, why = -1, "does not exist yet"
+    while True:
+        try:
+            size = path.stat().st_size
+            if size > 0 and size == last_size:
+                if sf.info(str(path)).frames > 0:
+                    return
+                why = "has no audio frames yet"
+            else:
+                why = f"is still being written ({size} bytes)"
+            last_size = size
+        except FileNotFoundError:
+            last_size, why = -1, "does not exist yet"
+        except (RuntimeError, OSError) as e:
+            why = f"cannot be opened yet ({e})"
+        if time.monotonic() > deadline:
+            raise TimeoutError(f"{path.name} {why} after {timeout:.0f}s")
+        time.sleep(interval)
 
 
 def _ffmpeg_decode(path: Path) -> tuple[np.ndarray, int]:

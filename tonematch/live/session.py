@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..audio import wait_until_readable
 from .client import LiveClient, LiveError
 from .params import LiveParam
 
@@ -237,7 +238,7 @@ class LiveSession:
 
     # -- recording -------------------------------------------------------
     def record(self, sources: list[str], start_beat: float, end_beat: float,
-               settle_s: float = 0.6) -> dict[str, Path]:
+               settle_s: float = 0.3, file_timeout_s: float = 30.0) -> dict[str, Path]:
         """Bounce several track outputs (or "Resampling" = master) in ONE real-time pass.
 
         One temporary audio track per source, input = that track's Post Mixer output,
@@ -270,7 +271,7 @@ class LiveSession:
             time.sleep(duration + 0.3)
             self.c.send("set_record_mode", enabled=False)
             self.c.send("stop_playback")
-            time.sleep(settle_s)  # let Live finalize the files
+            time.sleep(settle_s)
             out: dict[str, Path] = {}
             for src, idx in bounce.items():
                 clips = self.c.send("get_arrangement_clips", track_index=idx).get("clips", [])
@@ -278,6 +279,15 @@ class LiveSession:
                 if not files:
                     raise LiveError(f"Nothing was recorded from '{src}' (routing/arm failed?)")
                 out[src] = Path(files[-1])
+            # Live finishes writing (and on Windows unlocks) recordings shortly after the
+            # transport stops; read nothing until every take is complete.
+            for src, f in out.items():
+                try:
+                    wait_until_readable(f, timeout=file_timeout_s)
+                except TimeoutError as e:
+                    raise LiveError(f"Recording from '{src}' never became readable: {e}. Check free disk "
+                                    "space and that no other program (antivirus, cloud sync) holds the "
+                                    "project's Samples/Recorded folder.") from None
             return out
         finally:
             for idx in sorted(bounce.values(), reverse=True):

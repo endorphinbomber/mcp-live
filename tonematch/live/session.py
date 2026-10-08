@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import soundfile as sf
 
 from ..audio import load_audio
 from .client import LiveClient, LiveError
@@ -25,6 +26,58 @@ class TakeFailed(LiveError):
     def __init__(self, failures: list[dict]):
         self.failures = failures
         super().__init__("; ".join(f"{f['source']}: {f['error']}" for f in failures))
+
+
+def read_takes(paths: dict[str, Path | None], min_seconds: float, timeout_s: float = 10.0,
+               interval_s: float = 0.25) -> dict[str, np.ndarray]:
+    """Read recordings as soon as Live has finished them: the file opens, holds at least
+    `min_seconds` of audio and its size has stopped changing. Polls up to `timeout_s`."""
+    out: dict[str, np.ndarray] = {}
+    failures: list[dict] = []
+    pending: dict[str, Path] = {}
+    for src, p in paths.items():
+        if p is None:
+            failures.append({"source": src, "path": None, "error": "Live reported no recorded clip"})
+        else:
+            pending[src] = p
+    first_size = {src: _size(p) for src, p in pending.items()}
+    last_size: dict[str, int | None] = {src: None for src in pending}
+    errors: dict[str, Exception] = {}
+    deadline = time.monotonic() + timeout_s
+    while pending:
+        for src, p in list(pending.items()):
+            size = _size(p)
+            stable = size is not None and size > 0 and size == last_size[src]
+            last_size[src] = size
+            if not stable:
+                errors[src] = RuntimeError(f"still being written ({size} bytes)" if size else "not written yet")
+                continue
+            try:
+                info = sf.info(str(p))
+                if info.frames < min_seconds * info.samplerate:
+                    raise RuntimeError(f"only {info.frames / info.samplerate:.1f}s of {min_seconds:.1f}s written")
+                out[src] = load_audio(p)
+                del pending[src]
+            except Exception as e:
+                errors[src] = e
+        if not pending or time.monotonic() > deadline:
+            break
+        time.sleep(interval_s)
+    for src, p in pending.items():
+        d = take_diagnostics(src, p, errors.get(src, RuntimeError("timed out")))
+        d["size_first_seen"] = first_size[src]
+        d["waited_s"] = timeout_s
+        failures.append(d)
+    if failures:
+        raise TakeFailed(failures)
+    return out
+
+
+def _size(p: Path) -> int | None:
+    try:
+        return p.stat().st_size
+    except OSError:
+        return None
 
 
 def take_diagnostics(source: str, path: Path, error: Exception) -> dict:
@@ -269,13 +322,15 @@ class LiveSession:
 
     # -- recording -------------------------------------------------------
     def record(self, sources: list[str], start_beat: float, end_beat: float,
-               settle_s: float = 0.6) -> dict[str, np.ndarray]:
+               settle_s: float = 0.3, finalize_timeout_s: float = 10.0) -> dict[str, np.ndarray]:
         """Bounce several track outputs (or "Resampling" = master) in ONE real-time pass and
         return each take's audio (stereo, analysis rate, including the pre-roll).
 
         One temporary audio track per source, input = that track's Post Mixer output,
-        monitoring off, armed; arrangement record over [start_beat, end_beat]. The takes are
-        read before the temporary tracks are deleted; unreadable takes raise TakeFailed.
+        monitoring off, armed; arrangement record over [start_beat, end_beat].
+        Live keeps writing a recording until its track is disarmed/removed, so the tracks are
+        disarmed and deleted first, then each file is read as soon as it is complete.
+        Unreadable takes raise TakeFailed.
         """
         info = self.c.send("get_session_info")
         tempo = float(info.get("tempo", 120.0))
@@ -287,6 +342,7 @@ class LiveSession:
         self.c.send("stop_all_clips")
         self.c.send("back_to_arranger")
         bounce: dict[str, int] = {}
+        paths: dict[str, Path | None] = {}
         try:
             for src in sources:
                 idx = self.create_track(f"tm-bounce {src}", midi=False)
@@ -304,30 +360,23 @@ class LiveSession:
             time.sleep(duration + 0.3)
             self.c.send("set_record_mode", enabled=False)
             self.c.send("stop_playback")
-            time.sleep(settle_s)  # let Live finalize the files
-            # Read every take while its track (and clip) still exists in Live.
-            out: dict[str, np.ndarray] = {}
-            failures: list[dict] = []
+            time.sleep(settle_s)
+            for idx in bounce.values():
+                try:
+                    self.c.send("set_track_arm", track_index=idx, arm=False)
+                except LiveError:
+                    pass
             for src, idx in bounce.items():
                 clips = self.c.send("get_arrangement_clips", track_index=idx).get("clips", [])
                 files = [c["file_path"] for c in clips if c.get("is_audio_clip") and c.get("file_path")]
-                if not files:
-                    failures.append({"source": src, "path": None, "error": "Live reported no recorded clip"})
-                    continue
-                path = Path(files[-1])
-                try:
-                    out[src] = load_audio(path, retries=2, delay=0.3)
-                except Exception as e:
-                    failures.append(take_diagnostics(src, path, e))
-            if failures:
-                raise TakeFailed(failures)
-            return out
+                paths[src] = Path(files[-1]) if files else None
         finally:
             for idx in sorted(bounce.values(), reverse=True):
                 try:
                     self.c.send("delete_track", track_index=idx)
                 except LiveError:
                     pass
+        return read_takes(paths, min_seconds=0.9 * duration, timeout_s=finalize_timeout_s)
 
     @staticmethod
     def preroll_seconds(start_beat: float, tempo: float) -> float:

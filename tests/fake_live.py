@@ -137,6 +137,11 @@ class FakeLive:
         self.seconds = SECONDS
         self.broken_takes: set[int] = set()      # take numbers written as 0-byte files
         self.missing_takes: set[int] = set()     # take numbers never written
+        # Like real Live: a recording stays an unfinished 64 KiB-chunked file until its track
+        # is disarmed or deleted. `never_finalize` takes never get completed.
+        self.defer_finalize = False
+        self.never_finalize: set[int] = set()
+        self.pending: dict[str, tuple[Path, np.ndarray, int]] = {}   # track name -> (path, audio, take)
         self.search_hides: set[str] = set()      # plug-ins search_browser fails to return
         self.plugins_not_device: set[str] = set()  # plug-ins Live reports with is_device=False
 
@@ -275,6 +280,7 @@ class FakeLive:
             self.t(p["track_index"]).name = p["name"]
             return {}
         if cmd == "delete_track":
+            self._finalize(self.t(p["track_index"]).name)
             self.tracks.pop(p["track_index"])
             return {"deleted": True}
         if cmd == "search_browser":
@@ -335,6 +341,8 @@ class FakeLive:
             return {}
         if cmd == "set_track_arm":
             self.t(p["track_index"]).arm = bool(p["arm"])
+            if not p["arm"]:
+                self._finalize(self.t(p["track_index"]).name)
             return {"arm": True}
         if cmd == "create_clip":
             self.t(p["track_index"]).session_clip = {"length": p["length"], "notes": []}
@@ -367,6 +375,12 @@ class FakeLive:
             return {}
         raise Exception(f"fake: unknown command {cmd}")
 
+    def _finalize(self, track_name: str) -> None:
+        if track_name in self.pending:
+            path, audio, take = self.pending.pop(track_name)
+            if take not in self.never_finalize:
+                sf.write(path, audio.astype(np.float32), SR, subtype="FLOAT")
+
     def _finish_recording(self) -> None:
         for t in self.tracks:
             if not t.arm:
@@ -379,6 +393,9 @@ class FakeLive:
             path = self.dir / f"{t.name} take{self.takes}.wav"
             if self.takes in self.broken_takes:          # simulate Live leaving a file unreadable
                 path.write_bytes(b"")
+            elif self.defer_finalize:
+                path.write_bytes(b"\0" * 65536 * 3)     # in progress: no valid header yet
+                self.pending[t.name] = (path, audio, self.takes)
             elif self.takes not in self.missing_takes:
                 sf.write(path, audio.astype(np.float32), SR, subtype="FLOAT")
             t.arrangement.append({"is_audio_clip": True, "is_midi_clip": False, "file_path": str(path)})

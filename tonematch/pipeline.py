@@ -302,7 +302,8 @@ class Project:
         log = self.cfg.workdir / "failed_takes.log"
         for attempt in range(retries + 1):
             try:
-                return self.live.record(sources, region.start_beat, region.end_beat)
+                return self.live.record(sources, region.start_beat, region.end_beat,
+                                        finalize_timeout_s=float(self.cfg.match.get("finalize_timeout_s", 10.0)))
             except TakeFailed as e:
                 log.parent.mkdir(parents=True, exist_ok=True)
                 with open(log, "a", encoding="utf-8") as fh:

@@ -165,6 +165,14 @@ Plug-ins browser actually contains, with each item's path and URI.
 The same applies to Archetype, Hellrazer and Metal Eclipse. `tonematch doctor` checks every plug-in in
 your config. `build` can be re-run after a failure: tracks that already exist are reused.
 
+**A take fails or is retaken ("take failed ... recording again")**: tonematch reads each recording
+once Live has finished writing it, which happens when the temporary track is disarmed and removed. It
+waits up to `finalize_timeout_s` (10 s) and records the take again up to `take_retries` times. Each
+failure is logged in `work/failed_takes.log`. If this happens often, Live is writing files slowly:
+- Keep the project out of folders synced by OneDrive, Proton Drive or Dropbox. The Desktop and
+  Documents folders are often synced.
+- Add the project folder to the Windows Defender exclusions.
+
 ## Limitations
 
 - Stem separation of a mastered MP3 isn't perfect. Bass bleeds into guitar and cymbals into everything,

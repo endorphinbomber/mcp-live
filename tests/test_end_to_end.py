@@ -197,5 +197,7 @@ def test_build_from_guitar_pro_sets_palm_mute_velocities(tmp_path, monkeypatch):
         assert vels.count(20) == 16                         # the 16 palm-muted chugs from the tab
         assert all(v >= 64 for v in vels if v != 20)        # open notes can't be muted by humanize
     assert all(n["velocity"] > 40 for n in clips["Bass"])   # palm mutes only on the guitar tracks
+    assert {n["pitch"] for n in clips["Bass"]} == {28 + 12}   # default config: bass up one octave
+    assert min(n["pitch"] for n in clips["Gtr L"]) == 36      # guitars untransposed
     assert server.live.tempo == 120
     server.close()

@@ -145,6 +145,10 @@ humanized double can't mute a note by accident. Where the palm mutes come from d
 palm_mute = { mode = "auto", velocity = 20, threshold = 40, open_min = 64 }
 ```
 
+**Transposing.** `transpose = 12` on a track shifts all of its notes up an octave (negative numbers
+shift down). The default config does this for the Bass, because the Rickenbacker plays an octave
+higher than the tab or MIDI.
+
 `tonematch midi-info` shows each part's role, tuning and how many notes each mode would palm-mute.
 Check it before `build`.
 

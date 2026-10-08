@@ -59,6 +59,7 @@ class TrackSpec:
     outputs: list[dict[str, str]] = field(default_factory=list)
     note_map: dict[int, int] = field(default_factory=dict)   # MIDI pitch remap (e.g. GM -> MixWave)
     palm_mute: dict = field(default_factory=dict)             # see default_config.toml
+    transpose: int = 0                                        # semitones applied to every note
 
     @property
     def device_names(self) -> list[str]:
@@ -161,6 +162,7 @@ def parse_config(raw: dict[str, Any], root: Path) -> Config:
             outputs=list(t.get("outputs", [])),
             note_map={int(k): int(v) for k, v in t.get("note_map", {}).items()},
             palm_mute=dict(t.get("palm_mute", {})),
+            transpose=int(t.get("transpose", 0)),
         )
         for t in raw.get("tracks", [])
     ]

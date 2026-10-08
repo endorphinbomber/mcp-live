@@ -548,6 +548,8 @@ def prepare_notes(song: Song, part: Part, t: TrackSpec) -> tuple[list[Note], str
     """Notes for one Live track: drum remap, palm-mute decision (on the source notes),
     humanize, then palm-mute velocities (so jitter can never cross the threshold)."""
     notes = list(part.notes)
+    if t.transpose:
+        notes = [replace(n, pitch=min(127, max(0, n.pitch + t.transpose))) for n in notes]
     if t.note_map:
         notes = [replace(n, pitch=t.note_map.get(n.pitch, n.pitch)) for n in notes]
     summary, mode = "", ""
@@ -562,6 +564,8 @@ def prepare_notes(song: Song, part: Part, t: TrackSpec) -> tuple[list[Note], str
         n_pm = sum(1 for n in notes if n.palm_mute)
         source = {"file": "from the tab", "heuristic": "guessed from the riffs"}.get(mode, f"mode {mode}")
         summary = f"{n_pm} of {len(notes)} notes palm-muted ({source})"
+    if t.transpose:
+        summary = ", ".join(x for x in (f"transposed {t.transpose:+d} semitones", summary) if x)
     return notes, summary
 
 

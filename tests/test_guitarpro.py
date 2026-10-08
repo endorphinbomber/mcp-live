@@ -121,3 +121,15 @@ def test_humanized_velocities_never_cross_threshold():
         assert all(n.velocity >= 41 for n in out if not n.palm_mute)
     with pytest.raises(ValueError):
         palm_mute_velocities(marked, {"velocity": 45})
+
+
+def test_transpose_shifts_and_clamps():
+    from tonematch.config import TrackSpec
+    from tonematch.pipeline import prepare_notes
+    part = Part("Bass", 0, [Note(28, 0, 1, 90), Note(120, 1, 1, 90)])
+    song = Song([part], [(0.0, 120.0)])
+    t = TrackSpec(name="Bass", role="bass", stem="bass", instrument="kontakt", chain=[], transpose=12)
+    notes, summary = prepare_notes(song, part, t)
+    assert [n.pitch for n in notes] == [40, 127]
+    assert "transposed +12" in summary
+    assert [n.pitch for n in part.notes] == [28, 120]          # source part untouched

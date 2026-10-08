@@ -182,3 +182,20 @@ outputs = [{ name = "Kick", channel = "Post" }, { name = "Room", channel = "Post
     assert {"Drums", "Drums Kick", "Drums Room"} <= set(gains)
     assert len([e for e in proj.state["log"] if e["stage"] == "tone"]) == 3
     server.close()
+
+
+def test_build_from_guitar_pro_sets_palm_mute_velocities(tmp_path, monkeypatch):
+    from tests.gp_fixtures import write_gp5
+    server = FakeLiveServer()
+    write_gp5(tmp_path / "song.gp5")
+    (tmp_path / "tonematch.toml").write_text('[project]\nscore = "song.gp5"\n')
+    proj = Project(load_config(tmp_path / "tonematch.toml"), LiveClient(port=server.port), echo=lambda s: None)
+    proj.build()
+    clips = {t.name: t.session_clip["notes"] for t in server.live.tracks}
+    for name in ("Gtr L", "Gtr R"):
+        vels = [n["velocity"] for n in clips[name]]
+        assert vels.count(20) == 16                         # the 16 palm-muted chugs from the tab
+        assert all(v >= 64 for v in vels if v != 20)        # open notes can't be muted by humanize
+    assert all(n["velocity"] > 40 for n in clips["Bass"])   # palm mutes only on the guitar tracks
+    assert server.live.tempo == 120
+    server.close()

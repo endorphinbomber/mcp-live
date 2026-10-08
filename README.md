@@ -39,7 +39,7 @@ the faders are free for you.
    Decoding MP3 uses libsndfile, falling back to `ffmpeg` if it's on your PATH.
 3. In a folder with your files:
    ```bash
-   tonematch init           # writes tonematch.toml - set reference = "song.mp3", midi = "song.mid"
+   tonematch init           # writes tonematch.toml - set reference = "song.mp3", midi = "song.mid" (or song.gp5)
    tonematch doctor         # checks Live is reachable and the plug-ins are found
    ```
 
@@ -116,6 +116,37 @@ Register both MCP servers (e.g. Claude Desktop `claude_desktop_config.json`):
 
 Claude can then run `tonematch_analyze` → `tonematch_build` → `tonematch_discover` → `tonematch_match`,
 and use the ableton tools for anything by hand. Needs `pip install -e ".[mcp]"`.
+
+## Guitar Pro files and palm mutes
+
+You can use a Guitar Pro file instead of MIDI: set `midi = "song.gp5"` (or `score = "song.gp"`) in
+`tonematch.toml`. Supported formats are `.gp3`, `.gp4`, `.gp5` and `.gp` (Guitar Pro 7/8). For `.gpx`
+(Guitar Pro 6), open the file in Guitar Pro and save it as `.gp`, or export it as `.gp5`.
+
+From a Guitar Pro file, tonematch reads:
+- each track's notes, with pitch from its tuning and capo, and ties merged
+- dynamics as velocity
+- tempo changes
+- palm mutes, exactly as they're marked in the tab
+
+It also unrolls repeats, alternate endings and the common D.C./D.S./To Coda/Fine jumps so the timeline
+matches the recording. Dead (x) notes are skipped. Drum tracks are recognised as drums, and an
+instrument tuned to E1 or lower is treated as the bass.
+
+**Palm mutes.** The Ample guitars play a note palm-muted when its velocity is below 40. On the guitar
+tracks, tonematch sets palm-muted notes to velocity 20 and keeps open notes at 64 or above, so the
+humanized double can't mute a note by accident. Where the palm mutes come from depends on `mode`:
+- `auto` (default): the tab's marks if the file has them. Otherwise, MIDI velocities if the part
+  already separates muted from open notes. Otherwise a guess from the riffs: runs of short, low notes.
+- `file`, `velocity`, `cc` (with `cc = 64`), `heuristic` or `none` choose one source explicitly.
+- `pm_bars = "9-16, 33-40"` / `open_bars = "41-48"` force bar ranges either way.
+
+```toml
+palm_mute = { mode = "auto", velocity = 20, threshold = 40, open_min = 64 }
+```
+
+`tonematch midi-info` shows each part's role, tuning and how many notes each mode would palm-mute.
+Check it before `build`.
 
 ## Troubleshooting
 

@@ -58,6 +58,7 @@ class TrackSpec:
     humanize: dict[str, float] = field(default_factory=dict)
     outputs: list[dict[str, str]] = field(default_factory=list)
     note_map: dict[int, int] = field(default_factory=dict)   # MIDI pitch remap (e.g. GM -> MixWave)
+    palm_mute: dict = field(default_factory=dict)             # see default_config.toml
 
     @property
     def device_names(self) -> list[str]:
@@ -77,6 +78,13 @@ class Config:
     def path(self, key: str) -> Path:
         p = Path(self.raw["project"][key])
         return p if p.is_absolute() else self.root / p
+
+    @property
+    def score_path(self) -> Path:
+        """The song as MIDI or Guitar Pro: [project] score = ... (or the older key `midi`)."""
+        proj = self.raw["project"]
+        key = "score" if proj.get("score") else "midi"
+        return self.path(key)
 
     @property
     def workdir(self) -> Path:
@@ -152,6 +160,7 @@ def parse_config(raw: dict[str, Any], root: Path) -> Config:
             humanize=dict(t.get("humanize", {})),
             outputs=list(t.get("outputs", [])),
             note_map={int(k): int(v) for k, v in t.get("note_map", {}).items()},
+            palm_mute=dict(t.get("palm_mute", {})),
         )
         for t in raw.get("tracks", [])
     ]

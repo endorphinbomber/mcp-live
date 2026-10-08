@@ -22,7 +22,9 @@ from .match import levels as lv
 from .match.eqfit import EqBand, fit_eq
 from .match.loss import tone_loss, weights_for
 from .match.optimize import Candidate, Knob, Setting, ToneSearch, run_lockstep
-from .midi import Song, classify_parts, humanize, load_midi
+from dataclasses import replace
+
+from .midi import Note, Part, Song, classify_parts, humanize, load_song, mark_palm_mutes, palm_mute_velocities
 from .state import State
 
 DEFAULT_STAGES = ["levels", "tone", "levels", "eq", "pan", "levels", "master"]
@@ -56,7 +58,7 @@ class Project:
     @property
     def song(self) -> Song:
         if self._song is None:
-            self._song = load_midi(self.cfg.path("midi"))
+            self._song = load_song(self.cfg.score_path)
         return self._song
 
     def regions(self) -> list[align_mod.Region]:
@@ -165,13 +167,9 @@ class Project:
             idx = live.ensure_track(t.name, midi=True)
             devices = self._load_chain(idx, t.device_names, t.name)
             build["tracks"][t.name] = {"devices": devices}
-            notes = roles[t.role].notes
-            if t.note_map:
-                notes = [type(n)(t.note_map.get(n.pitch, n.pitch), n.start, n.duration, n.velocity) for n in notes]
-            if t.humanize:
-                h = t.humanize
-                notes = humanize(notes, song.bpm, float(h.get("timing_ms", 0)), int(h.get("velocity", 0)),
-                                 int(h.get("seed", 0)))
+            notes, summary = prepare_notes(song, roles[t.role], t)
+            if summary:
+                self.echo(f"  {t.name}: {summary}")
             live.write_midi(idx, [n.to_live() for n in notes], length)
             live.set_mixer(idx, pan=t.pan, unity=True)
             self.applied()["pan"][t.name] = t.pan
@@ -544,6 +542,27 @@ class Project:
             ref = self.device_ref("Master", "Limiter")
             p = {q.name: q for q in self.live.device_params(ref)}["Gain"]
             self.live.set_display(ref, p, ap["master"]["limiter_gain_db"], "dB")
+
+
+def prepare_notes(song: Song, part: Part, t: TrackSpec) -> tuple[list[Note], str]:
+    """Notes for one Live track: drum remap, palm-mute decision (on the source notes),
+    humanize, then palm-mute velocities (so jitter can never cross the threshold)."""
+    notes = list(part.notes)
+    if t.note_map:
+        notes = [replace(n, pitch=t.note_map.get(n.pitch, n.pitch)) for n in notes]
+    summary, mode = "", ""
+    if t.palm_mute:
+        notes, mode = mark_palm_mutes(notes, t.palm_mute, song.beats_per_bar(), part.ccs)
+    if t.humanize:
+        h = t.humanize
+        notes = humanize(notes, song.bpm, float(h.get("timing_ms", 0)), int(h.get("velocity", 0)),
+                         int(h.get("seed", 0)))
+    if t.palm_mute:
+        notes = palm_mute_velocities(notes, t.palm_mute)
+        n_pm = sum(1 for n in notes if n.palm_mute)
+        source = {"file": "from the tab", "heuristic": "guessed from the riffs"}.get(mode, f"mode {mode}")
+        summary = f"{n_pm} of {len(notes)} notes palm-muted ({source})"
+    return notes, summary
 
 
 def _merge_eq(prev: list[EqBand], new: list[EqBand], max_bands: int = EQ_BANDS) -> list[EqBand]:

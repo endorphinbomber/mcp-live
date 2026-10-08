@@ -77,6 +77,39 @@ def cmd_plugins(args) -> int:
     return 0
 
 
+def cmd_midi_info(args) -> int:
+    from .midi import classify_parts, load_song, mark_palm_mutes
+    cfg = load_config(args.config if Path(args.config).exists() else None)
+    path = Path(args.file) if args.file else cfg.score_path
+    song = load_song(path)
+    roles = {id(p): r for r, p in classify_parts(song).items()}
+    tempos = ", ".join(f"{bpm:g} BPM @ beat {b:g}" for b, bpm in song.tempos[:6])
+    print(f"{path.name}: {len(song.parts)} parts, {song.end_beat / song.beats_per_bar():.0f} bars, "
+          f"{song.time_signature[0]}/{song.time_signature[1]}, {tempos}")
+    for line in song.notes_info:
+        print(f"  note: {line}")
+    for p in song.parts:
+        vels = [n.velocity for n in p.notes]
+        pitches = [n.pitch for n in p.notes]
+        role = roles.get(id(p), "-")
+        print(f"\n[{role}] {p.name} (channel {p.channel + 1}): {len(p.notes)} notes, pitch {min(pitches)}-{max(pitches)}, "
+              f"velocity {min(vels)}-{max(vels)}")
+        if p.strings:
+            print(f"  tuning (low->high): {p.strings}")
+        if p.ccs:
+            ccs = sorted({c for _, c, _ in p.ccs})
+            print(f"  controllers used: {ccs}")
+        if role in ("guitar",):
+            for mode in ("auto", "file", "velocity", "heuristic"):
+                if mode == "file" and not any(n.palm_mute is not None for n in p.notes):
+                    continue
+                marked, used = mark_palm_mutes(p.notes, {"mode": mode}, song.beats_per_bar(), p.ccs)
+                n_pm = sum(1 for n in marked if n.palm_mute)
+                label = f"auto -> {used}" if mode == "auto" else mode
+                print(f"  palm mutes with mode {label:<16} {n_pm:5d} of {len(marked)}")
+    return 0
+
+
 def cmd_analyze(args) -> int:
     _project(args).analyze()
     return 0
@@ -153,6 +186,9 @@ def main(argv: list[str] | None = None) -> int:
     pl = sub.add_parser("plugins", help="list Live's Plug-ins browser (optionally filtered)")
     pl.add_argument("query", nargs="?")
     pl.set_defaults(fn=cmd_plugins)
+    mi = sub.add_parser("midi-info", help="show parts, roles and palm-mute counts of the MIDI/Guitar Pro file")
+    mi.add_argument("file", nargs="?")
+    mi.set_defaults(fn=cmd_midi_info)
     sub.add_parser("analyze", help="separate stems, align MIDI, measure the reference").set_defaults(fn=cmd_analyze)
     sub.add_parser("build", help="create tracks/devices/MIDI in Live").set_defaults(fn=cmd_build)
     sub.add_parser("discover", help="list plug-in parameters and pattern matches").set_defaults(fn=cmd_discover)

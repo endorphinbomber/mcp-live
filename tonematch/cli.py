@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -205,8 +206,10 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     try:
         return args.fn(args)
-    except (LiveError, ValueError, RuntimeError, KeyError) as e:
+    except (LiveError, ValueError, RuntimeError, KeyError, OSError, subprocess.CalledProcessError) as e:
         print(f"error: {e}", file=sys.stderr)
+        if args.cmd == "match":
+            print("Finished stages are saved; re-run `tonematch match --stages ...` to continue.", file=sys.stderr)
         return 2
 
 

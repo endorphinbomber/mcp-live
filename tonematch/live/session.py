@@ -8,12 +8,44 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
+
+from ..audio import load_audio
 from .client import LiveClient, LiveError
 from .params import LiveParam
 
 UNITY_FADER = 0.85          # Live mixer volume value for 0 dB
 MONITOR_OFF = 2
 MAX_RECORD_SECONDS = 300.0
+
+
+class TakeFailed(LiveError):
+    """One or more recordings of a take could not be read; `failures` holds diagnostics."""
+
+    def __init__(self, failures: list[dict]):
+        self.failures = failures
+        super().__init__("; ".join(f"{f['source']}: {f['error']}" for f in failures))
+
+
+def take_diagnostics(source: str, path: Path, error: Exception) -> dict:
+    """What the file system says about a take that couldn't be read."""
+    info: dict = {"source": source, "path": str(path), "exists": path.exists(),
+                  "error": f"{type(error).__name__}: {error}".splitlines()[0][:300]}
+    try:
+        info["size"] = path.stat().st_size
+    except OSError:
+        info["size"] = None
+    try:
+        prefix = f"tm-bounce {source}"
+        info["siblings"] = sorted(f"{p.name} ({p.stat().st_size} B)" for p in path.parent.iterdir()
+                                  if p.name.startswith(prefix))[-6:]
+    except OSError:
+        info["siblings"] = []
+    if not info["exists"]:
+        info["error"] = "file missing - " + info["error"]
+    elif info["size"] == 0:
+        info["error"] = "file is 0 bytes - " + info["error"]
+    return info
 
 
 @dataclass
@@ -237,11 +269,13 @@ class LiveSession:
 
     # -- recording -------------------------------------------------------
     def record(self, sources: list[str], start_beat: float, end_beat: float,
-               settle_s: float = 0.6) -> dict[str, Path]:
-        """Bounce several track outputs (or "Resampling" = master) in ONE real-time pass.
+               settle_s: float = 0.6) -> dict[str, np.ndarray]:
+        """Bounce several track outputs (or "Resampling" = master) in ONE real-time pass and
+        return each take's audio (stereo, analysis rate, including the pre-roll).
 
         One temporary audio track per source, input = that track's Post Mixer output,
-        monitoring off, armed; arrangement record over [start_beat, end_beat].
+        monitoring off, armed; arrangement record over [start_beat, end_beat]. The takes are
+        read before the temporary tracks are deleted; unreadable takes raise TakeFailed.
         """
         info = self.c.send("get_session_info")
         tempo = float(info.get("tempo", 120.0))
@@ -271,13 +305,22 @@ class LiveSession:
             self.c.send("set_record_mode", enabled=False)
             self.c.send("stop_playback")
             time.sleep(settle_s)  # let Live finalize the files
-            out: dict[str, Path] = {}
+            # Read every take while its track (and clip) still exists in Live.
+            out: dict[str, np.ndarray] = {}
+            failures: list[dict] = []
             for src, idx in bounce.items():
                 clips = self.c.send("get_arrangement_clips", track_index=idx).get("clips", [])
                 files = [c["file_path"] for c in clips if c.get("is_audio_clip") and c.get("file_path")]
                 if not files:
-                    raise LiveError(f"Nothing was recorded from '{src}' (routing/arm failed?)")
-                out[src] = Path(files[-1])
+                    failures.append({"source": src, "path": None, "error": "Live reported no recorded clip"})
+                    continue
+                path = Path(files[-1])
+                try:
+                    out[src] = load_audio(path, retries=2, delay=0.3)
+                except Exception as e:
+                    failures.append(take_diagnostics(src, path, e))
+            if failures:
+                raise TakeFailed(failures)
             return out
         finally:
             for idx in sorted(bounce.values(), reverse=True):

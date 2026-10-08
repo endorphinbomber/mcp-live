@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from collections import defaultdict
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable
 
@@ -17,13 +19,11 @@ from .audio import ANALYSIS_SR, load_audio, segment
 from .config import Config, ParamSpec, TrackSpec
 from .live.client import LiveClient, LiveError
 from .live.params import LiveParam, resolve, resolve_all
-from .live.session import DeviceRef, LiveSession
+from .live.session import DeviceRef, LiveSession, TakeFailed
 from .match import levels as lv
 from .match.eqfit import EqBand, fit_eq
 from .match.loss import tone_loss, weights_for
 from .match.optimize import Candidate, Knob, Setting, ToneSearch, run_lockstep
-from dataclasses import replace
-
 from .midi import Note, Part, Song, classify_parts, humanize, load_song, mark_palm_mutes, palm_mute_velocities
 from .state import State
 
@@ -47,6 +47,7 @@ class Project:
         self.echo = echo
         self._song: Song | None = None
         self._track_idx: dict[str, int] | None = None
+        self._stage = ""
 
     # ----------------------------------------------------------------- helpers
     @property
@@ -272,13 +273,13 @@ class Project:
         for ri in region_ids:
             r = regions[ri]
             sources = [s for t in tracks for s in self.sources(t)]
-            files = self.live.record(sources, r.start_beat, r.end_beat)
+            takes = self._take(sources, r)
             pre = LiveSession.preroll_seconds(r.start_beat, tempo)
             dur = (r.end_beat - r.start_beat) * 60.0 / tempo
             for t in tracks:
                 audio = None
                 for s in self.sources(t):
-                    a = segment(load_audio(files[s]), pre, pre + dur)
+                    a = segment(takes[s], pre, pre + dur)
                     audio = a if audio is None else audio[: len(a)] + a[: len(audio)]
                 out[t.name].append(analyze_audio(audio))
         self.state.data["last_render"] = {k: [f.to_dict() for f in v] for k, v in out.items()}
@@ -289,11 +290,29 @@ class Project:
         feats = []
         for ri in region_ids:
             r = self.regions()[ri]
-            f = self.live.record(["Resampling"], r.start_beat, r.end_beat)["Resampling"]
+            audio = self._take(["Resampling"], r)["Resampling"]
             pre = LiveSession.preroll_seconds(r.start_beat, tempo)
-            feats.append(analyze_audio(segment(load_audio(f), pre, pre + (r.end_beat - r.start_beat) * 60 / tempo)))
+            feats.append(analyze_audio(segment(audio, pre, pre + (r.end_beat - r.start_beat) * 60 / tempo)))
         self.state.data.setdefault("last_render", {})["Master"] = [f.to_dict() for f in feats]
         return feats
+
+    def _take(self, sources: list[str], region: align_mod.Region) -> dict[str, np.ndarray]:
+        """Record one take; if a recording can't be read, log why and record it again."""
+        retries = int(self.cfg.match.get("take_retries", 2))
+        log = self.cfg.workdir / "failed_takes.log"
+        for attempt in range(retries + 1):
+            try:
+                return self.live.record(sources, region.start_beat, region.end_beat)
+            except TakeFailed as e:
+                log.parent.mkdir(parents=True, exist_ok=True)
+                with open(log, "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps({"time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                                         "stage": self._stage, "region_beats": [region.start_beat, region.end_beat],
+                                         "attempt": attempt + 1, "failures": e.failures}) + "\n")
+                if attempt == retries:
+                    raise LiveError(f"Take failed {retries + 1} times ({e}). Details: {log}") from None
+                self.echo(f"  take failed ({e}) - recording again ({attempt + 1}/{retries})")
+        raise AssertionError("unreachable")
 
     # ================================================================== stages
     def match(self, stages: list[str] | None = None) -> None:
@@ -303,6 +322,7 @@ class Project:
             if st not in handlers:
                 raise ValueError(f"Unknown stage {st!r}; choose from {sorted(handlers)}")
             self.echo(f"== stage: {st}")
+            self._stage = st
             handlers[st]()
             self.state.checkpoint(st)
 

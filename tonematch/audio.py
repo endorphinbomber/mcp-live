@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import numpy as np
@@ -13,12 +14,20 @@ from scipy.signal import resample_poly
 ANALYSIS_SR = 44100
 
 
-def load_audio(path: str | Path, sr: int = ANALYSIS_SR) -> np.ndarray:
-    """Load any audio file as float32 stereo (n, 2) at `sr`."""
+def load_audio(path: str | Path, sr: int = ANALYSIS_SR, retries: int = 0, delay: float = 0.3) -> np.ndarray:
+    """Load any audio file as float32 stereo (n, 2) at `sr`.
+
+    `retries` re-tries libsndfile `delay` seconds apart before the ffmpeg fallback (for
+    files another program may still hold open for a moment)."""
     path = Path(path)
-    try:
-        data, file_sr = sf.read(str(path), dtype="float32", always_2d=True)
-    except Exception:
+    for attempt in range(retries + 1):
+        try:
+            data, file_sr = sf.read(str(path), dtype="float32", always_2d=True)
+            break
+        except Exception:
+            if attempt < retries:
+                time.sleep(delay)
+    else:
         data, file_sr = _ffmpeg_decode(path)
     if data.shape[1] == 1:
         data = np.repeat(data, 2, axis=1)

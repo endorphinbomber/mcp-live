@@ -135,6 +135,8 @@ class FakeLive:
         self.takes = 0
         self.commands: list[str] = []
         self.seconds = SECONDS
+        self.broken_takes: set[int] = set()      # take numbers written as 0-byte files
+        self.missing_takes: set[int] = set()     # take numbers never written
         self.search_hides: set[str] = set()      # plug-ins search_browser fails to return
         self.plugins_not_device: set[str] = set()  # plug-ins Live reports with is_device=False
 
@@ -374,8 +376,11 @@ class FakeLive:
             else:
                 audio = self.track_out(next(x for x in self.tracks if x.name == t.input_type))
             self.takes += 1
-            path = self.dir / f"take{self.takes}.wav"
-            sf.write(path, audio.astype(np.float32), SR, subtype="FLOAT")
+            path = self.dir / f"{t.name} take{self.takes}.wav"
+            if self.takes in self.broken_takes:          # simulate Live leaving a file unreadable
+                path.write_bytes(b"")
+            elif self.takes not in self.missing_takes:
+                sf.write(path, audio.astype(np.float32), SR, subtype="FLOAT")
             t.arrangement.append({"is_audio_clip": True, "is_midi_clip": False, "file_path": str(path)})
 
 

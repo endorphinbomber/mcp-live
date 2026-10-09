@@ -11,13 +11,14 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-from ..audio import load_audio
+from ..audio import ANALYSIS_SR, load_audio
 from .client import LiveClient, LiveError
 from .params import LiveParam
 
 UNITY_FADER = 0.85          # Live mixer volume value for 0 dB
 MONITOR_OFF = 2
 MAX_RECORD_SECONDS = 300.0
+LEAD_SECONDS = 1.0      # play this long before switching recording on
 
 
 class TakeFailed(LiveError):
@@ -68,6 +69,25 @@ def read_takes(paths: dict[str, Path | None], min_seconds: float, timeout_s: flo
         d["size_first_seen"] = first_size[src]
         d["waited_s"] = timeout_s
         failures.append(d)
+    if failures:
+        raise TakeFailed(failures)
+    return out
+
+
+def align_takes(takes: dict[str, np.ndarray], starts: dict[str, float], at_beat: float, tempo: float,
+                max_late_beats: float, sr: int = ANALYSIS_SR) -> dict[str, np.ndarray]:
+    """Make sample 0 of every take = `at_beat`. A recording that began earlier (the lead-in)
+    is trimmed; one that began a little late (within the pre-roll) is padded with silence."""
+    out, failures = {}, []
+    for src, audio in takes.items():
+        offset = (at_beat - starts[src]) * 60.0 / tempo           # seconds recorded before at_beat
+        if offset >= 0:
+            out[src] = audio[int(round(offset * sr)):]
+        elif -offset * tempo / 60.0 <= max_late_beats + 1e-6:
+            out[src] = np.concatenate([np.zeros((int(round(-offset * sr)), audio.shape[1]), audio.dtype), audio])
+        else:
+            failures.append({"source": src, "path": None,
+                             "error": f"recording began {starts[src] - at_beat:.2f} beats late"})
     if failures:
         raise TakeFailed(failures)
     return out
@@ -360,6 +380,7 @@ class LiveSession:
         self.c.send("back_to_arranger")
         bounce: dict[str, int] = {}
         paths: dict[str, Path | None] = {}
+        starts: dict[str, float] = {}
         try:
             for src in sources:
                 idx = self.create_track(f"tm-bounce {src}", midi=False)
@@ -371,17 +392,10 @@ class LiveSession:
                     self.route_input(idx, src)
                 self.c.send("set_track_monitoring", track_index=idx, state=MONITOR_OFF)
                 self.c.send("set_track_arm", track_index=idx, arm=True)
-            self.c.send("set_current_song_time", time=start_beat - pre)
-            self.c.send("set_record_mode", enabled=True)
-            # continue_playing plays from the playhead; start_playback would start at Live's
-            # start marker (usually bar 1) whatever the playhead says.
-            self.c.send("continue_playing")
-            at = self.c.send("get_session_info").get("current_song_time")
-            if at is not None and not (start_beat - pre - 1.0 <= float(at) <= end_beat):
-                self.c.send("set_record_mode", enabled=False)
-                self.c.send("stop_playback")
-                raise LiveError(f"Live started playing at beat {float(at):g} instead of {start_beat - pre:g}")
-            time.sleep(duration + 0.3)
+            began = self._punch_in(start_beat - pre, tempo)
+            pos = self.c.send("get_session_info").get("current_song_time")
+            pos = began if pos is None else float(pos)
+            time.sleep(max(0.0, (end_beat - pos) * 60.0 / tempo) + 0.3)
             self.c.send("set_record_mode", enabled=False)
             self.c.send("stop_playback")
             time.sleep(settle_s)
@@ -392,15 +406,44 @@ class LiveSession:
                     pass
             for src, idx in bounce.items():
                 clips = self.c.send("get_arrangement_clips", track_index=idx).get("clips", [])
-                files = [c["file_path"] for c in clips if c.get("is_audio_clip") and c.get("file_path")]
-                paths[src] = Path(files[-1]) if files else None
+                audio = [c for c in clips if c.get("is_audio_clip") and c.get("file_path")]
+                paths[src] = Path(audio[-1]["file_path"]) if audio else None
+                starts[src] = float(audio[-1].get("start_time", began)) if audio else began
         finally:
             for idx in sorted(bounce.values(), reverse=True):
                 try:
                     self.c.send("delete_track", track_index=idx)
                 except LiveError:
                     pass
-        return read_takes(paths, min_seconds=0.9 * duration, timeout_s=finalize_timeout_s)
+        takes = read_takes(paths, min_seconds=0.9 * duration, timeout_s=finalize_timeout_s)
+        return align_takes(takes, starts, start_beat - pre, tempo, max_late_beats=max(pre, 0.25))
+
+    def _punch_in(self, at_beat: float, tempo: float, tries: int = 3) -> float:
+        """Start the transport, jump to just before `at_beat` and switch arrangement recording on.
+
+        Live ignores playhead changes while stopped (start_playback plays from the start marker,
+        continue_playing from the last stop), so the jump happens while playing. Recording
+        starts a little before `at_beat`; returns the beat where it was switched on."""
+        lead = max(1.0, math.ceil(LEAD_SECONDS * tempo / 60.0))
+        cue = max(0.0, at_beat - lead)
+        window_end = at_beat if at_beat > cue else at_beat + 0.25
+        self.c.send("set_record_mode", enabled=False)
+        self.c.send("continue_playing")
+        seen = None
+        for _ in range(tries):
+            self.c.send("set_current_song_time", time=cue)
+            deadline = time.monotonic() + 1.0
+            while True:
+                seen = self.c.send("get_session_info").get("current_song_time")
+                if seen is None or cue - 0.05 <= float(seen) < window_end:
+                    self.c.send("set_record_mode", enabled=True)
+                    return cue if seen is None else float(seen)
+                if time.monotonic() > deadline:
+                    break
+                time.sleep(0.02)
+        self.c.send("stop_playback")
+        raise LiveError(f"Live didn't move the playhead to beat {cue:g} for recording "
+                        f"(it stayed at beat {float(seen):g}).")
 
     @staticmethod
     def preroll_seconds(start_beat: float, tempo: float) -> float:

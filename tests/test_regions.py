@@ -1,12 +1,16 @@
 """Region choice (busiest, then most different, spread out) and per-region tempo in Live."""
 
+import math
+
+import numpy as np
 import pytest
 
-from tests.fake_live import FakeLiveServer
+from tests.fake_live import SR, FakeLiveServer
 from tests.test_end_to_end import make_reference, write_midi
-from tonematch.analysis.align import Alignment, pick_regions, region_bpm
+from tonematch.analysis.align import Alignment, Region, pick_regions, region_bpm
 from tonematch.config import load_config
-from tonematch.live.client import LiveClient
+from tonematch.live.client import LiveClient, LiveError
+from tonematch.live.session import LEAD_SECONDS, TakeFailed
 from tonematch.midi import Note, Part, Song
 from tonematch.pipeline import Project
 
@@ -78,12 +82,62 @@ scale = 1.0
             return real(cmd, params)
 
         fake.handle = handle
-        fake.played_from.clear()
+        fake.record_starts.clear()
         p.match(["levels"])
         assert set(seen) == {regs[0]["bpm"], 200.0}
-        starts = {r["start_beat"] - (1.0 if r["start_beat"] >= 1 else 0.0) for r in regs}
-        assert set(fake.played_from) == starts          # each take plays its own region, not bar 1
+        # every take switches recording on just before its own region (Live ignores the
+        # playhead while stopped, so this only works by jumping while playing)
+        expected = set()
+        for r in regs:
+            at = r["start_beat"] - (1.0 if r["start_beat"] >= 1 else 0.0)
+            expected.add(max(0.0, at - max(1.0, math.ceil(LEAD_SECONDS * r["bpm"] / 60.0))))
+        assert set(fake.record_starts) == expected
         assert regs[1]["start_beat"] > 0
         assert fake.tempo == p.song.bpm                # set back to the song tempo afterwards
     finally:
         server.close()
+
+
+REGION = Region(start_beat=40.0, end_beat=48.0, ref_start_s=0.0, ref_end_s=2.0, bpm=240.0)
+
+
+@pytest.fixture
+def proj(tmp_path, monkeypatch):
+    monkeypatch.setattr("tonematch.live.session.time.sleep", lambda s: None)
+    server = FakeLiveServer()
+    write_midi(tmp_path / "song.mid")
+    (tmp_path / "tonematch.toml").write_text('[project]\nmidi = "song.mid"\n')
+    p = Project(load_config(tmp_path / "tonematch.toml"), LiveClient(port=server.port), echo=lambda m: None)
+    p.build()
+    yield p, server.live
+    server.close()
+
+
+def test_take_is_trimmed_to_start_one_beat_before_the_region(proj):
+    p, fake = proj
+    fake.tempo = 240.0
+    takes = p.live.record(["Bass"], REGION.start_beat, REGION.end_beat)
+    (start,) = fake.record_starts
+    assert start == 39.0 - 4.0                                        # 1 s lead-in at 240 BPM
+    lead_s = 4.0 * 60 / 240
+    assert len(takes["Bass"]) == pytest.approx((fake.seconds - lead_s) * SR, abs=2)
+
+
+def test_slightly_late_recording_is_padded_too_late_is_retaken(proj):
+    p, fake = proj
+    fake.tempo = 240.0
+    fake.record_delay_beats = 4.5                                     # on 0.5 beat after the pre-roll began
+    takes = p.live.record(["Bass"], REGION.start_beat, REGION.end_beat)
+    pad = int(round(0.5 * 60 / 240 * SR))
+    assert np.all(takes["Bass"][:pad] == 0) and len(takes["Bass"]) == fake.seconds * SR + pad
+    fake.record_delay_beats = 6.0                                     # missed the start of the region
+    with pytest.raises(TakeFailed, match="beats late"):
+        p.live.record(["Bass"], REGION.start_beat, REGION.end_beat)
+
+
+def test_playhead_that_will_not_move_is_explained(proj):
+    p, fake = proj
+    fake.jump_fails = True
+    with pytest.raises(LiveError, match="didn't move to beat"):
+        p.live.record(["Bass"], REGION.start_beat, REGION.end_beat)
+    assert not fake.playing

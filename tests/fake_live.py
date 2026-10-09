@@ -147,7 +147,13 @@ class FakeLive:
         self.master: list[tuple[str, list[P]]] = []
         self.tempo = 120.0
         self.song_time = 0.0
+        self.playing = False
+        self.stop_pos = 0.0                         # where continue_playing resumes
         self.played_from: list[float] = []          # playhead (beats) at each playback start
+        self.record_starts: list[float] = []        # beat where arrangement recording was switched on
+        self.record_start = 0.0
+        self.record_delay_beats = 0.0               # Live switching recording on late
+        self.jump_fails = False                     # set_current_song_time ignored even while playing
         self.sig = (4, 4)
         self.record_mode = False
         self.dir = Path(tempfile.mkdtemp(prefix="fakelive-"))
@@ -421,19 +427,26 @@ class FakeLive:
                                   "notes": len(t.session_clip["notes"])})
             return {}
         if cmd == "set_record_mode":
+            if p["enabled"] and not self.record_mode and self.playing:
+                self.record_start = self.song_time + self.record_delay_beats
+                self.record_starts.append(self.record_start)
             self.record_mode = bool(p["enabled"])
             return {}
         if cmd == "stop_playback":
             self._finish_recording()
+            self.playing = False
+            self.stop_pos = self.song_time + 5.0       # the transport ran on before stopping
             return {}
-        if cmd == "set_current_song_time":
-            self.song_time = float(p.get("time", 0.0))
+        if cmd == "set_current_song_time":             # like Live: ignored while stopped
+            if self.playing and not self.jump_fails:
+                self.song_time = float(p.get("time", 0.0))
             return {}
         if cmd == "start_playback":                    # like Live: from the start marker
-            self.song_time = 0.0
+            self.playing, self.song_time = True, 0.0
             self.played_from.append(self.song_time)
             return {}
-        if cmd == "continue_playing":                  # from the playhead
+        if cmd == "continue_playing":                  # like Live: from where it last stopped
+            self.playing, self.song_time = True, self.stop_pos
             self.played_from.append(self.song_time)
             return {}
         if cmd in ("stop_all_clips", "back_to_arranger"):
@@ -463,7 +476,8 @@ class FakeLive:
                 self.pending[t.name] = (path, audio, self.takes)
             elif self.takes not in self.missing_takes:
                 sf.write(path, audio.astype(np.float32), SR, subtype="FLOAT")
-            t.arrangement.append({"is_audio_clip": True, "is_midi_clip": False, "file_path": str(path)})
+            t.arrangement.append({"is_audio_clip": True, "is_midi_clip": False, "file_path": str(path),
+                                  "start_time": self.record_start})
 
 
 class FakeLiveServer:

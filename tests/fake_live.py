@@ -103,8 +103,12 @@ def make_device(kind: str) -> tuple[str, list[P]]:
                    P(f"{b} Gain A", -15, 15, 0, fmt="db"),
                    P(f"{b} Resonance A", 0, 1, 0.42, fmt="q")]
         return kind, ps
-    if kind == "Limiter":
-        return kind, [P("Gain", 0, 24, 0, fmt="db"), P("Ceiling", -24, 0, 0, fmt="db")]
+    if kind == "Limiter":      # Live 12's Limiter
+        return kind, [P("Device On", 0, 1, 1, True, ["Off", "On"]), P("Input Gain", -12, 24, 0, fmt="db"),
+                      P("Ceiling", -24, 0, 0, fmt="db"), P("Maximize On", 0, 1, 1, True, ["Off", "On"]),
+                      P("Threshold", -24, 0, 0, fmt="db"), P("Output", -24, 0, 0, fmt="db")]
+    if kind == "Limiter (legacy)":
+        return "Limiter", [P("Gain", 0, 24, 0, fmt="db"), P("Ceiling", -24, 0, 0, fmt="db")]
     if kind == "Pedal":
         return kind, [P("Type", 0, 2, 0, True, ["OD", "Distort", "Fuzz"]), P("Gain", 0, 1, 0.2),
                       P("Bass", 0, 1, 0.5), P("Mid", 0, 1, 0.5), P("Treble", 0, 1, 0.5), P("Dry/Wet", 0, 1, 1.0)]
@@ -222,7 +226,10 @@ class FakeLive:
                 g = v["Gain"].value
                 x = x * (0.0 if g <= 0 else 10 ** ((-35 + 70 * g) / 20))
             elif kind == "Limiter":
-                x = x * 10 ** (v["Gain"].value / 20)
+                drive = v["Gain"].value if "Gain" in v else v["Input Gain"].value
+                if v.get("Maximize On") is not None and v["Maximize On"].value >= 0.5:
+                    drive = -v["Threshold"].value           # Maximize: Threshold drives loudness
+                x = x * 10 ** (drive / 20)
                 ceil = 10 ** (v["Ceiling"].value / 20)
                 x = np.clip(x, -ceil, ceil)
         return x

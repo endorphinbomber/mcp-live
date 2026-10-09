@@ -53,7 +53,8 @@ def test_master_stage_finds_devices_in_any_order(setup):
                 next(q for q in params if q.name == "Gain").value -= 6 / 70
     p.match(["master"])
     limiter = {q.name: q.value for q in fake.master[master_names(fake).index("Limiter")][1]}
-    assert limiter["Gain"] > 3                                      # gain went to the real Limiter
+    assert limiter["Maximize On"] == 0                              # Live 12 Maximize mode switched off
+    assert limiter["Input Gain"] > 3                                # gain went to the real Limiter
     assert limiter["Ceiling"] == pytest.approx(-0.3, abs=0.05)
     assert any(m.startswith("  master EQ") for m in messages)       # EQ written to the real EQ Eight
     assert fake.master[master_names(fake).index("Utility")][1][0].value == 0.5   # user's device untouched
@@ -74,3 +75,17 @@ def test_missing_master_device_is_skipped_or_explained(setup):
     assert any("no Limiter on the Master track" in m for m in messages)
     with pytest.raises(LiveError, match="Master track has no 'Limiter'.*EQ Eight"):
         p.device_ref("Master", "Limiter")
+
+
+def test_older_limiter_with_gain_parameter(setup):
+    p, fake, tmp_path, messages = setup
+    i = master_names(fake).index("Limiter")
+    fake.master[i] = make_device("Limiter (legacy)")
+    make_reference(fake, tmp_path)
+    p.analyze()
+    for t in fake.tracks:
+        for name, params in t.devices:
+            if name == "Utility":
+                next(q for q in params if q.name == "Gain").value -= 6 / 70
+    p.match(["master"])
+    assert {q.name: q.value for q in fake.master[i][1]}["Gain"] > 3

@@ -601,9 +601,7 @@ class Project:
             self.echo("  master EQ: " + ", ".join(f"{b.kind} {b.freq:.0f}Hz {b.gain_db:+.1f}dB" for b in bands))
         if has_limiter:
             ref = self.device_ref("Master", "Limiter")
-            params = {p.name: p for p in self.live.device_params(ref)}
-            if "Gain" not in params:
-                raise LiveError(f"Limiter exposes no 'Gain' parameter (has {sorted(params)})")
+            params, gain_param = self._limiter(ref)
             if "Ceiling" in params:
                 self.live.set_display(ref, params["Ceiling"], -0.3, "dB")
             gain = self.applied().setdefault("master", {}).get("limiter_gain_db", 0.0)
@@ -620,12 +618,27 @@ class Project:
                     break
                 last = (gain, mix_lufs)
                 gain = float(np.clip(gain + delta / slope, 0.0, 24.0))
-                gain = self.live.set_display(ref, params["Gain"], gain, "dB")
+                gain = self.live.set_display(ref, gain_param, gain, "dB")
                 self.applied()["master"]["limiter_gain_db"] = gain
             if abs(delta) >= 0.5:
                 self.echo(f"  master: stopped {delta:+.1f} dB short of the reference loudness - the "
                           "reference is likely more compressed; lower the Glue threshold and re-run `--stages master`.")
         self.state.log("master", {"lufs": feats[0].lufs, "crest_db": feats[0].crest_db})
+
+    def _limiter(self, ref: DeviceRef) -> tuple[dict[str, LiveParam], LiveParam]:
+        """Limiter parameters and its gain control: "Gain" (older Live) or "Input Gain"
+        (Live 12). Live 12's Maximize mode drives loudness with Threshold instead, so it is
+        switched off and Input Gain is used."""
+        params = {p.name: p for p in self.live.device_params(ref)}
+        maximize = params.get("Maximize On")
+        if maximize is not None and maximize.value >= 0.5:
+            self.live.set_params([(ref, maximize.index, 0.0)])
+            self.echo("  master: switched the Limiter's Maximize mode off (tonematch drives Input Gain)")
+            params = {p.name: p for p in self.live.device_params(ref)}
+        for name in ("Gain", "Input Gain"):
+            if name in params:
+                return params, params[name]
+        raise LiveError(f"Limiter has no 'Gain' or 'Input Gain' parameter (has {sorted(params)})")
 
     # ============================================================== rollback
     def reapply(self, snapshot: Path | None = None) -> None:
@@ -646,8 +659,8 @@ class Project:
             self._write_eq(track, [EqBand(**b) for b in bands])
         if "limiter_gain_db" in ap.get("master", {}):
             ref = self.device_ref("Master", "Limiter")
-            p = {q.name: q for q in self.live.device_params(ref)}["Gain"]
-            self.live.set_display(ref, p, ap["master"]["limiter_gain_db"], "dB")
+            _, gain_param = self._limiter(ref)
+            self.live.set_display(ref, gain_param, ap["master"]["limiter_gain_db"], "dB")
 
 
 def prepare_notes(song: Song, part: Part, t: TrackSpec) -> tuple[list[Note], str]:

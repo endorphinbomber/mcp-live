@@ -119,8 +119,10 @@ and use the ableton tools for anything by hand. Needs `pip install -e ".[mcp]"`.
 
 ## Guitar Pro files and palm mutes
 
-You can use a Guitar Pro file instead of MIDI: set `midi = "song.gp5"` (or `score = "song.gp"`) in
-`tonematch.toml`. Supported formats are `.gp3`, `.gp4`, `.gp5` and `.gp` (Guitar Pro 7/8). For `.gpx`
+**A Guitar Pro file is all you need; use MIDI only if you have no tab.** Leave `score = ""` and put the
+`.gp5`/`.gp` file in the project folder, or set `score = "song.gp5"`. If a single Guitar Pro file sits next
+to a MIDI file, tonematch uses the Guitar Pro file. Set `score = "song.mid"` to force MIDI. `analyze` and
+`build` print which file they use. If you switch files, run `tonematch analyze` again. Supported formats are `.gp3`, `.gp4`, `.gp5` and `.gp` (Guitar Pro 7/8). For `.gpx`
 (Guitar Pro 6), open the file in Guitar Pro and save it as `.gp`, or export it as `.gp5`.
 
 From a Guitar Pro file, tonematch reads:

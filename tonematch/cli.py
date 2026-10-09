@@ -27,7 +27,7 @@ def cmd_init(args) -> int:
         print(f"{dest} already exists")
         return 1
     shutil.copy(DEFAULT_CONFIG_PATH, dest)
-    print(f"Wrote {dest}. Set [project].reference and .midi, then run `tonematch analyze`.")
+    print(f"Wrote {dest}. Set [project] reference (and score, if the folder has more than one song file), then run `tonematch analyze`.")
     return 0
 
 

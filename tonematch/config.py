@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_CONFIG_PATH = Path(__file__).with_name("default_config.toml")
+GP_SUFFIXES = (".gp", ".gp5", ".gp4", ".gp3")
+MIDI_SUFFIXES = (".mid", ".midi")
 
 STOCK_DEVICES = {
     "EQ Eight", "Utility", "Compressor", "Glue Compressor", "Limiter", "Pedal", "Roar",
@@ -82,10 +84,31 @@ class Config:
 
     @property
     def score_path(self) -> Path:
-        """The song as MIDI or Guitar Pro: [project] score = ... (or the older key `midi`)."""
+        """The song file (Guitar Pro or MIDI).
+
+        `score` wins when set. Otherwise the `midi` key is used, except that a single Guitar
+        Pro file in the project folder is preferred over a MIDI file (it carries palm mutes).
+        With neither set (or the file missing) the project folder is searched: Guitar Pro first,
+        then MIDI."""
         proj = self.raw["project"]
-        key = "score" if proj.get("score") else "midi"
-        return self.path(key)
+        if proj.get("score"):
+            return self.path("score")
+        found = sorted(self.root.iterdir()) if self.root.is_dir() else []
+        gps = [p for p in found if p.suffix.lower() in GP_SUFFIXES]
+        mids = [p for p in found if p.suffix.lower() in MIDI_SUFFIXES]
+        configured = self.path("midi") if proj.get("midi") else None
+        if configured is not None and configured.exists():
+            if configured.suffix.lower() in MIDI_SUFFIXES and len(gps) == 1:
+                return gps[0]
+            return configured
+        if len(gps) == 1:
+            return gps[0]
+        if not gps and len(mids) == 1:
+            return mids[0]
+        names = ", ".join(p.name for p in gps + mids) or "none"
+        what = f"'{configured.name}' not found; " if configured is not None else ""
+        raise FileNotFoundError(f"{what}can't pick the song file in {self.root} (found: {names}). "
+                                "Set score = \"yourfile.gp5\" under [project] in tonematch.toml.")
 
     @property
     def workdir(self) -> Path:

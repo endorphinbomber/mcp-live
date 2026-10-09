@@ -6,8 +6,8 @@
 
 [project]
 reference = "reference.mp3"      # the song you want to match
-midi = "song.mid"                # the song as MIDI (.mid) or Guitar Pro (.gp5/.gp4/.gp3/.gp)
-# score = "song.gp"              # same thing; if set it wins over `midi`
+score = ""                       # the song as Guitar Pro (.gp5/.gp/.gp4/.gp3) or MIDI (.mid).
+                                 # Empty = auto-detect in this folder (a Guitar Pro file wins: it has palm mutes)
 workdir = "work"                 # analysis cache, checkpoints, recordings
 outdir = "out"                   # presets, report
 

@@ -16,7 +16,7 @@ from .analysis import align as align_mod
 from .analysis.features import Features, analyze as analyze_audio
 from .analysis.separate import separate
 from .audio import ANALYSIS_SR, load_audio, segment
-from .config import Config, ParamSpec, TrackSpec
+from .config import GP_SUFFIXES, Config, ParamSpec, TrackSpec
 from .live.client import LiveClient, LiveError
 from .live.params import LiveParam, resolve, resolve_all
 from .live.session import DeviceRef, LiveSession, TakeFailed
@@ -62,6 +62,19 @@ class Project:
             self._song = load_song(self.cfg.score_path)
         return self._song
 
+    def describe_song(self) -> str:
+        path = self.cfg.score_path
+        kind = ("Guitar Pro, palm mutes from the tab" if path.suffix.lower() in GP_SUFFIXES
+                else "MIDI, palm mutes guessed unless the MIDI marks them")
+        return f"Song: {path.name} ({kind})"
+
+    def check_song_unchanged(self) -> None:
+        analysed = self.state.get("analysis", {}).get("song_file")
+        current = self.cfg.score_path.name
+        if analysed and analysed != current:
+            self.echo(f"WARNING: analysis was made from {analysed}, but the song file is now {current}. "
+                      "Re-run `tonematch analyze` - the comparison regions depend on it.")
+
     def regions(self) -> list[align_mod.Region]:
         return [align_mod.Region(**r) for r in self.state["analysis"]["regions"]]
 
@@ -97,6 +110,7 @@ class Project:
     def analyze(self) -> dict:
         cfg, a = self.cfg, self.cfg.analysis
         ref_path = cfg.path("reference")
+        self.echo(self.describe_song())
         self.echo(f"Loading reference {ref_path.name}")
         ref = load_audio(ref_path)
         if a.get("separator", "demucs") == "demucs":
@@ -145,6 +159,7 @@ class Project:
             "roles": {role: {"name": p.name, "channel": p.channel, "notes": len(p.notes)}
                       for role, p in roles.items()},
             "bpm": song.bpm,
+            "song_file": self.cfg.score_path.name,
             "time_signature": list(song.time_signature),
             "stems": {k: str(v) for k, v in stems.items()},
             "features": features,
@@ -155,6 +170,8 @@ class Project:
     # =================================================================== build
     def build(self) -> list[str]:
         """Create tracks, load plug-ins, write MIDI, set pans. Returns manual follow-ups."""
+        self.echo(self.describe_song())
+        self.check_song_unchanged()
         cfg, live, song = self.cfg, self.live, self.song
         todo: list[str] = []
         num, den = song.time_signature
@@ -319,6 +336,7 @@ class Project:
     def match(self, stages: list[str] | None = None) -> None:
         handlers = {"levels": self.stage_levels, "tone": self.stage_tone, "eq": self.stage_eq,
                     "pan": self.stage_pan, "master": self.stage_master}
+        self.check_song_unchanged()
         for st in stages or DEFAULT_STAGES:
             if st not in handlers:
                 raise ValueError(f"Unknown stage {st!r}; choose from {sorted(handlers)}")

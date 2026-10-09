@@ -23,9 +23,17 @@ def _project(args):
 
 def cmd_init(args) -> int:
     dest = Path(args.config)
-    if dest.exists():
-        print(f"{dest} already exists")
+    if dest.exists() and not args.force:
+        print(f"{dest} already exists. `tonematch init --force` rewrites it from the current defaults, "
+              "keeping your [project] and [analysis] settings (old file saved as .bak).")
         return 1
+    if dest.exists():
+        from .config import refresh_config_text
+        backup = dest.with_name(dest.name + ".bak")
+        shutil.copy(dest, backup)
+        dest.write_text(refresh_config_text(backup, DEFAULT_CONFIG_PATH.read_text()))
+        print(f"Rewrote {dest} from the current defaults; kept [project] and [analysis]. Old file: {backup}")
+        return 0
     shutil.copy(DEFAULT_CONFIG_PATH, dest)
     print(f"Wrote {dest}. Set [project] reference (and score, if the folder has more than one song file), then run `tonematch analyze`.")
     return 0
@@ -182,7 +190,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("-c", "--config", default=CONFIG_NAME)
     ap.add_argument("--port", type=int, default=9877, help="AbletonMCP Remote Script port")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("init", help="write a tonematch.toml to edit").set_defaults(fn=cmd_init)
+    ini = sub.add_parser("init", help="write a tonematch.toml to edit")
+    ini.add_argument("--force", action="store_true",
+                     help="rewrite an existing tonematch.toml from the defaults, keeping [project] and [analysis]")
+    ini.set_defaults(fn=cmd_init)
     sub.add_parser("doctor", help="check Live connection and plug-ins").set_defaults(fn=cmd_doctor)
     pl = sub.add_parser("plugins", help="list Live's Plug-ins browser (optionally filtered)")
     pl.add_argument("query", nargs="?")

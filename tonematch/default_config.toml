@@ -20,7 +20,7 @@ regions = 2                      # how many regions (densest + most contrasting)
 
 [match]
 headroom_db = 6.0                # pre-master headroom; the master stage restores loudness
-tone_trials = 40                 # optuna trials = real-time takes (all tracks recorded per take)
+tone_trials = 60                 # optuna trials = real-time takes (all tracks recorded per take)
 tone_regions = 1                 # regions used per tone take (more = slower, more robust)
 level_tolerance_db = 0.5
 finalize_timeout_s = 10.0        # max wait per take for Live to finish writing a recording (normally < 1 s)
@@ -36,7 +36,7 @@ seed = 7
 name = "Drums"
 role = "drums"
 stem = "drums"
-instrument = "kontakt"           # Kontakt: load MixWave Gojira inside it by hand
+instrument = "kontakt_drums"     # Kontakt: load MixWave Gojira inside it by hand
 chain = ["EQ Eight", "Glue Compressor", "Utility"]
 pan = 0.0
 # Optional Kontakt multi-outs. Each becomes an audio track fed from the Drums track;
@@ -55,7 +55,7 @@ pan = 0.0
 name = "Bass"
 role = "bass"
 stem = "bass"
-instrument = "kontakt"           # Kontakt: load the NI Rickenbacker bass inside it by hand
+instrument = "kontakt_bass"      # Kontakt: load the NI Rickenbacker bass inside it by hand
 chain = ["Pedal", "EQ Eight", "Compressor", "Utility"]
 pan = 0.0
 transpose = 12                   # semitones; the Rickenbacker plays an octave higher than the tab/MIDI
@@ -77,7 +77,7 @@ palm_mute = { mode = "auto", velocity = 20, threshold = 40, open_min = 64 }
 name = "Gtr R"
 role = "guitar"
 stem = "guitar"
-instrument = "metal_eclipse"
+instrument = "hellrazer"         # Metal Hellrazer on both sides; the humanized MIDI makes the double
 chain = ["archetype_gojira", "EQ Eight", "Utility"]
 pan = 1.0
 double_of = "Gtr L"              # same MIDI, humanized so the double sounds real
@@ -90,13 +90,39 @@ chain = ["EQ Eight", "Glue Compressor", "Limiter"]
 # ---------------------------------------------------------------- plugins
 # `search` is the name looked up in Live's Plug-ins browser.
 
-[plugins.kontakt]
+[plugins.kontakt_drums]
 search = "Kontakt"               # matched against Live's Plug-ins browser; see `tonematch plugins kontakt`
 # uri = "..."                    # or pin the exact browser URI printed by `tonematch plugins`
+# MixWave Gojira mixer, exposed by Kontakt as host-automation parameters #000...
+# span = search +/- that much (normalized) around the kit's current setting.
+# group = true moves every matched parameter together (toms, cymbals).
+params = [
+  { key = "kick1",     pattern = "^#000$", span = 0.2 },
+  { key = "kick2",     pattern = "^#001$", span = 0.2 },
+  { key = "snare",     pattern = "^#002$", span = 0.2 },
+  { key = "toms",      pattern = "^#00[345]$", span = 0.2, group = true },
+  { key = "hihat",     pattern = "^#006$", span = 0.2 },
+  { key = "cymbals",   pattern = "^#0(0[789]|1[01])$", span = 0.2, group = true },
+  { key = "monoroom",  pattern = "^#012$", span = 0.2 },
+  { key = "overhead2", pattern = "^#013$", span = 0.2 },
+  { key = "overhead",  pattern = "^#014$", span = 0.2 },
+  { key = "room",      pattern = "^#015$", span = 0.2 },
+  { key = "oh_width",  pattern = "^#030$", span = 0.25 },
+  { key = "snare_verb", pattern = "^#050$", span = 0.2 },
+]
+# Not touched: #032 master (the levels stage sets loudness), pans, widths other than the
+# overheads, tom reverb #052, and #034 (master comp / room width).
+
+[plugins.kontakt_bass]
+search = "Kontakt"
+params = []
+
+[plugins.kontakt]                # older configs used one `kontakt` entry for both; no knobs
+search = "Kontakt"
 params = []
 
 [plugins.hellrazer]
-search = "Hellrazer"
+search = "Hellrazer"             # Ample Metal Hellrazer
 params = [
   { key = "pickup", pattern = "pickup|pu ?select", kind = "categorical" },
   { key = "tone", pattern = "^tone", kind = "continuous", range = [0.3, 1.0] },
@@ -110,21 +136,32 @@ params = [
 ]
 
 [plugins.archetype_gojira]
-search = "Archetype Gojira"
-# `{amp}` is replaced by the display label of the chosen `amp` (e.g. "Rust"), so
-# only the selected amp's knobs are optimized.
+search = "Archetype Gojira"      # matches "Archetype Gojira X"
+# HOT amp, as exposed by Archetype Gojira X (Configure). Amp/cab type stay as set (HOT);
+# Output is left alone (the levels stage sets loudness), and so are the gate, pans and on/off of the cabs.
 params = [
-  { key = "amp",      pattern = "amp ?(type|select|model|channel)", kind = "categorical" },
-  { key = "cab_mic",  pattern = "(cab|mic).*(type|model|select)", kind = "categorical" },
-  { key = "gain",     pattern = "{amp}.*gain|amp.*gain", kind = "continuous", range = [0.3, 0.95] },
-  { key = "bass",     pattern = "{amp}.*bass|amp.*bass", kind = "continuous", range = [0.2, 0.8] },
-  { key = "mid",      pattern = "{amp}.*mid|amp.*mid", kind = "continuous", range = [0.2, 0.8] },
-  { key = "treble",   pattern = "{amp}.*treble|amp.*treble", kind = "continuous", range = [0.2, 0.8] },
-  { key = "presence", pattern = "{amp}.*presence|presence", kind = "continuous", range = [0.2, 0.8] },
-  { key = "depth",    pattern = "{amp}.*depth|depth", kind = "continuous", range = [0.2, 0.8] },
-  { key = "mic_pos",  pattern = "mic.*(position|pos)", kind = "continuous", range = [0.0, 1.0] },
-  { key = "mic_dist", pattern = "mic.*dist", kind = "continuous", range = [0.0, 1.0] },
-  { key = "gate",     pattern = "gate.*thresh", kind = "continuous", range = [0.2, 0.7] },
+  { key = "gain",      pattern = "^HOT Amp Gain$",     range = [0.25, 0.9] },
+  { key = "bass",      pattern = "^HOT Amp Bass$",     range = [0.2, 0.8] },
+  { key = "mid",       pattern = "^HOT Amp Mid$",      range = [0.2, 0.85] },
+  { key = "treble",    pattern = "^HOT Amp Treble$",   range = [0.2, 0.85] },
+  { key = "presence",  pattern = "^HOT Amp Pres",      range = [0.2, 0.85] },
+  { key = "depth",     pattern = "^HOT Amp Depth$",    range = [0.2, 0.8] },
+  { key = "master",    pattern = "^HOT Amp Master$",   range = [0.3, 0.85] },
+  { key = "od",        pattern = "^OD Active$",        kind = "categorical" },
+  { key = "od_dist",   pattern = "^OD Dist$",          range = [0.0, 0.6] },
+  { key = "od_tone",   pattern = "^OD Tone$",          range = [0.3, 0.9] },
+  { key = "od_level",  pattern = "^OD Level$",         range = [0.3, 0.9] },
+  { key = "drt",       pattern = "^DRT Active$",       kind = "categorical" },
+  { key = "drt_dist",  pattern = "^DRT Dist$",         range = [0.0, 0.7] },
+  { key = "drt_filter", pattern = "^DRT Filter$",      range = [0.3, 1.0] },
+  { key = "drt_vol",   pattern = "^DRT Vol$",          range = [0.3, 0.9] },
+  { key = "mic_l",     pattern = "L Type$",            kind = "categorical" },
+  { key = "mic_r",     pattern = "R Type$",            kind = "categorical" },
+  { key = "cab_l_pos", pattern = "^Cab L Position$",   range = [0.0, 1.0] },
+  { key = "cab_r_pos", pattern = "^Cab R Position$",   range = [0.0, 1.0] },
+  { key = "cab_l_dist", pattern = "^Cab L Distance$",  range = [0.0, 0.6] },
+  { key = "cab_r_dist", pattern = "^Cab R Distance$",  range = [0.0, 0.6] },
+  { key = "cab_r_level", pattern = "^Cab R Level$",    range = [0.3, 0.9] },
 ]
 
 # Live stock devices (names as Live 12 shows them).

@@ -67,13 +67,13 @@ def make_reference(fake, tmp_path):
     defaults = {t.name: copy.deepcopy(t.devices) for t in fake.tracks}
     master_defaults = copy.deepcopy(fake.master)
     names = {t.name for t in fake.tracks}
-    for g, amp, treble, bass in (("Gtr L", 2, 0.8, 0.3), ("Gtr R", 2, 0.75, 0.35)):
+    for g, mic, treble, bass in (("Gtr L", 1, 0.8, 0.3), ("Gtr R", 1, 0.75, 0.35)):
         if g not in names:
             continue
-        set_by_name(fake, g, "Archetype Gojira", "Amp Type", amp)
-        set_by_name(fake, g, "Archetype Gojira", "Hot Treble", treble)
-        set_by_name(fake, g, "Archetype Gojira", "Hot Bass", bass)
-        set_by_name(fake, g, "Archetype Gojira", "Hot Gain", 0.7)
+        set_by_name(fake, g, "Archetype Gojira X", "HOT Amp Cab L Type", mic)
+        set_by_name(fake, g, "Archetype Gojira X", "HOT Amp Treble", treble)
+        set_by_name(fake, g, "Archetype Gojira X", "HOT Amp Bass", bass)
+        set_by_name(fake, g, "Archetype Gojira X", "HOT Amp Gain", 0.7)
     if "Bass" in names:
         set_by_name(fake, "Bass", "Pedal", "Treble", 0.2)
     set_by_name(fake, "Drums", "Utility", "Gain", 0.55)
@@ -98,7 +98,8 @@ def test_closed_loop(project):
     proj, fake, tmp_path = project
     todo = proj.build()
     assert [t.name for t in fake.tracks] == ["Drums", "Bass", "Gtr L", "Gtr R"]
-    assert [d[0] for d in fake.tracks[2].devices] == ["Hellrazer", "Archetype Gojira", "EQ Eight", "Utility"]
+    assert [d[0] for d in fake.tracks[2].devices] == ["Metal Hellrazer", "Archetype Gojira X", "EQ Eight", "Utility"]
+    assert fake.tracks[3].devices[0][0] == "Metal Hellrazer"            # both guitars on Hellrazer
     assert [d[0] for d in fake.master] == ["EQ Eight", "Glue Compressor", "Limiter"]
     assert fake.tracks[2].arrangement and fake.tempo == 240
     assert any("Kontakt" in s for s in todo)
@@ -107,7 +108,11 @@ def test_closed_loop(project):
     proj.analyze()
     report = proj.discover()
     gl = report["Gtr L/archetype_gojira"]
-    assert gl["resolved"]["amp"] == "Amp Type" and "Hot" in gl["choices"]["amp"]
+    assert gl["resolved"]["gain"] == "HOT Amp Gain" and gl["resolved"]["presence"] == "HOT Amp Presence"
+    assert gl["choices"]["mic_l"] == ["Dynamic 57", "Condenser 414", "Ribbon 121"]
+    assert gl["missing"] == []
+    dr = report["Drums/kontakt_drums"]
+    assert dr["resolved"]["toms"] == "#003 + #004 + #005" and dr["missing"] == []
 
     def guitar_loss():
         feats = proj.render([proj.cfg.track("Gtr L")], [0])["Gtr L"][0]
@@ -136,11 +141,11 @@ def test_closed_loop(project):
     assert write_report(proj).read_text().startswith("<!doctype html>")
 
     # Rollback: reapplying the stored settings onto a reset device restores them.
-    set_by_name(fake, "Gtr L", "Archetype Gojira", "Amp Type", 0)
-    proj.reapply()
-    stored = ap["params"]["Gtr L"]["archetype_gojira"]["0"]
     t = next(t for t in fake.tracks if t.name == "Gtr L")
-    assert t.devices[1][1][0].value == stored
+    gain_idx = next(i for i, q in enumerate(t.devices[1][1]) if q.name == "HOT Amp Gain")
+    t.devices[1][1][gain_idx].value = 0.0
+    proj.reapply()
+    assert t.devices[1][1][gain_idx].value == ap["params"]["Gtr L"]["archetype_gojira"][str(gain_idx)]
 
 
 def test_kontakt_multi_outs(tmp_path, monkeypatch):

@@ -24,6 +24,8 @@ class ParamSpec:
     pattern: str
     kind: str = "continuous"          # "continuous" | "categorical"
     range: tuple[float, float] = (0.0, 1.0)
+    group: bool = False               # one knob drives every parameter the pattern matches
+    span: float | None = None         # range = current value +/- span (normalized), instead of `range`
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "ParamSpec":
@@ -33,7 +35,20 @@ class ParamSpec:
         lo, hi = d.get("range", (0.0, 1.0))
         if not 0.0 <= lo < hi <= 1.0:
             raise ValueError(f"param {d.get('key')!r}: range must satisfy 0 <= lo < hi <= 1")
-        return cls(key=d["key"], pattern=d["pattern"], kind=kind, range=(float(lo), float(hi)))
+        span = d.get("span")
+        if span is not None and not 0.0 < float(span) <= 1.0:
+            raise ValueError(f"param {d.get('key')!r}: span must be between 0 and 1")
+        if d.get("group") and kind != "continuous":
+            raise ValueError(f"param {d.get('key')!r}: group only works for continuous knobs")
+        return cls(key=d["key"], pattern=d["pattern"], kind=kind, range=(float(lo), float(hi)),
+                   group=bool(d.get("group", False)), span=None if span is None else float(span))
+
+    def bounds(self, current_u: float) -> tuple[float, float]:
+        """Search range in normalized units, given the parameter's current value."""
+        if self.span is None:
+            return self.range
+        lo, hi = max(0.0, current_u - self.span), min(1.0, current_u + self.span)
+        return (lo, hi) if hi - lo > 1e-6 else (max(0.0, hi - 1e-3), hi)
 
 
 @dataclass
@@ -206,3 +221,48 @@ def parse_config(raw: dict[str, Any], root: Path) -> Config:
         for dev in t.device_names:
             cfg.plugin(dev)  # raises early on typos
     return cfg
+
+
+# ------------------------------------------------------------------ init --force
+KEEP_SECTIONS = ("project", "analysis")
+
+
+def _toml_value(v: Any) -> str:
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        return repr(v)
+    if isinstance(v, str):
+        return '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    if isinstance(v, (list, tuple)):
+        return "[" + ", ".join(_toml_value(x) for x in v) + "]"
+    if isinstance(v, dict):
+        return "{ " + ", ".join(f'"{k}" = {_toml_value(x)}' if not k.isidentifier() else f"{k} = {_toml_value(x)}"
+                                for k, x in v.items()) + " }"
+    raise TypeError(f"Can't write {type(v).__name__} to TOML")
+
+
+def refresh_config_text(old_path: Path, default_text: str) -> str:
+    """Default config text with the user's [project] and [analysis] values put back in."""
+    with open(old_path, "rb") as f:
+        old = tomllib.load(f)
+    lines = default_text.splitlines()
+    for section in KEEP_SECTIONS:
+        values = dict(old.get(section, {}))
+        if not values:
+            continue
+        start = next(i for i, ln in enumerate(lines) if ln.strip() == f"[{section}]")
+        end = next((i for i in range(start + 1, len(lines)) if lines[i].lstrip().startswith("[")), len(lines))
+        for i in range(start + 1, end):
+            raw = lines[i].lstrip("# ").split("=", 1)
+            key = raw[0].strip()
+            if len(raw) == 2 and key in values:
+                comment = lines[i].split("#", 1)[1].strip() if "#" in lines[i].split("=", 1)[1] else ""
+                if _toml_value(values[key]).count("#"):
+                    comment = ""
+                lines[i] = f"{key} = {_toml_value(values.pop(key))}" + (f"   # {comment}" if comment else "")
+        insert = [f"{k} = {_toml_value(v)}" for k, v in values.items()]
+        while end > start + 1 and not lines[end - 1].strip():
+            end -= 1
+        lines[end:end] = insert
+    return "\n".join(lines) + "\n"

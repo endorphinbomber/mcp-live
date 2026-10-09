@@ -25,7 +25,7 @@ from tonematch.match.eqfit import _biquad
 
 SR = 44100
 SECONDS = 4.0
-AMPS = ["Clean", "Rust", "Hot"]
+MICS = ["Dynamic 57", "Condenser 414", "Ribbon 121"]
 EQ_TYPES = ["Low Cut 48", "Low Cut 12", "Low Shelf", "Bell", "Notch", "High Shelf", "High Cut 12", "High Cut 48"]
 
 
@@ -70,15 +70,28 @@ def _num(text: str) -> float:
 
 
 def make_device(kind: str) -> tuple[str, list[P]]:
-    if kind == "Archetype Gojira":
-        ps = [P("Amp Type", 0, 2, 0, True, AMPS)]
-        for a in AMPS:
-            ps += [P(f"{a} Gain", 0, 1, 0.5), P(f"{a} Bass", 0, 1, 0.5), P(f"{a} Treble", 0, 1, 0.5)]
+    if kind == "Archetype Gojira X":
+        # Names as Archetype Gojira X exposes them in Live (HOT amp configured).
+        onoff = ["Off", "On"]
+        ps = [P("Cab Type (unlinked)", 0, 2, 2, True, ["CLEAN", "RUST", "HOT"])]
+        ps += [P(f"HOT Amp {k}", 0, 1, 0.5) for k in ("Gain", "Bass", "Mid", "Treble", "Presence", "Depth",
+                                                        "Master", "Output")]
+        ps += [P("Gate Active", 0, 1, 1, True, onoff), P("Gate Threshold", 0, 1, 0.3),
+               P("OD Active", 0, 1, 0, True, onoff), P("OD Dist", 0, 1, 0.0), P("OD Tone", 0, 1, 0.5),
+               P("OD Level", 0, 1, 0.5),
+               P("DRT Active", 0, 1, 0, True, onoff), P("DRT Dist", 0, 1, 0.3), P("DRT Filter", 0, 1, 0.9),
+               P("DRT Vol", 0, 1, 0.6)]
+        for side in "LR":
+            ps += [P(f"HOT Amp Cab {side} Type", 0, 2, 0, True, MICS),
+                   P(f"Cab {side} Position", 0, 1, 0.3), P(f"Cab {side} Distance", 0, 1, 0.0),
+                   P(f"Cab {side} Level", 0, 1, 0.8 if side == "L" else 0.5), P(f"Cab {side} Pan", 0, 1, 0.5),
+                   P(f"Cab {side} Active", 0, 1, 1, True, onoff)]
         return kind, ps
-    if kind in ("Hellrazer", "Metal Eclipse"):
+    if kind in ("Metal Hellrazer", "Metal Eclipse"):
         return kind, [P("Pickup", 0, 1, 0, True, ["Neck", "Bridge"]), P("Tone", 0, 1, 0.5)]
     if kind == "Kontakt 8":
-        return kind, [P(f"#{i:02d}", 0, 1, 0) for i in range(4)]
+        # MixWave-style host-automation slots (#000 kick1, #002 snare, #014 overhead, ...).
+        return kind, [P(f"#{i:03d}", 0, 1, 0.6) for i in (*range(16), 28, 29, 30, 32, 34, 50, 52)]
     if kind == "Utility":
         return kind, [P("Gain", 0, 1, 0.5, fmt="utility_db"), P("Mute", 0, 1, 0, True, ["Off", "On"])]
     if kind == "EQ Eight":
@@ -99,7 +112,7 @@ def make_device(kind: str) -> tuple[str, list[P]]:
 
 
 CATALOG = {
-    "plugins": ["Archetype Gojira", "Hellrazer", "Metal Eclipse", "Kontakt 8"],
+    "plugins": ["Archetype Gojira X", "Metal Hellrazer", "Metal Eclipse", "Kontakt 8"],
     "audio_effects": ["EQ Eight", "Utility", "Glue Compressor", "Compressor", "Limiter", "Pedal"],
 }
 
@@ -153,7 +166,12 @@ class FakeLive:
         inst = t.devices[0][0] if t.devices else ""
         if inst == "Kontakt 8" and "drum" in t.name.lower():
             env = np.exp(-np.arange(len(x)) % int(SR * 0.125) / (SR * 0.03))
-            return sosfilt(butter(2, [40, 12000], "bandpass", fs=SR, output="sos"), x * env)
+            x = sosfilt(butter(2, [40, 12000], "bandpass", fs=SR, output="sos"), x * env)
+            v = {p.name: p.value for p in t.devices[0][1]}
+            x = _shelf(x, "Low Shelf", 120, (v["#000"] + v["#001"] - 1.2) * 12)      # kicks
+            x = _shelf(x, "Bell", 2000, (v["#002"] - 0.6) * 12, 1.0)                  # snare
+            x = _shelf(x, "High Shelf", 6000, (v["#014"] + v["#013"] - 1.2) * 10)    # overheads
+            return x
         if inst == "Kontakt 8":
             return sosfilt(butter(4, 400, "lowpass", fs=SR, output="sos"), x) * 2
         return sosfilt(butter(2, [90, 7000], "bandpass", fs=SR, output="sos"), x) * 0.5
@@ -161,13 +179,26 @@ class FakeLive:
     def process(self, x: np.ndarray, devices) -> np.ndarray:
         for kind, ps in devices:
             v = {p.name: p for p in ps}
-            if kind == "Archetype Gojira":
-                amp = AMPS[int(round(v["Amp Type"].value))]
-                drive = [1.0, 3.0, 8.0][AMPS.index(amp)] * (0.2 + 2 * v[f"{amp} Gain"].value)
+            if kind == "Archetype Gojira X":
+                g = {name: p.value for name, p in v.items()}
+                drive = 0.5 + 8 * g["HOT Amp Gain"] * (0.5 + g["HOT Amp Master"])
+                if g["OD Active"] >= 0.5:
+                    drive *= 1 + 3 * g["OD Dist"]
+                    x = _shelf(x, "High Shelf", 1500, (g["OD Tone"] - 0.5) * 12)
                 x = np.tanh(drive * x / (np.std(x) + 1e-9)) * 0.3
-                x = _shelf(x, "Low Shelf", 150, (v[f"{amp} Bass"].value - 0.5) * 24)
-                x = _shelf(x, "High Shelf", 2500, (v[f"{amp} Treble"].value - 0.5) * 24)
-            elif kind in ("Hellrazer", "Metal Eclipse"):
+                x = _shelf(x, "Low Shelf", 90, (g["HOT Amp Depth"] - 0.5) * 12)
+                x = _shelf(x, "Low Shelf", 200, (g["HOT Amp Bass"] - 0.5) * 18)
+                x = _shelf(x, "Bell", 800, (g["HOT Amp Mid"] - 0.5) * 14, 0.8)
+                x = _shelf(x, "High Shelf", 2500, (g["HOT Amp Treble"] - 0.5) * 18)
+                x = _shelf(x, "High Shelf", 5000, (g["HOT Amp Presence"] - 0.5) * 10)
+                mic_db = {"Dynamic 57": 0.0, "Condenser 414": 4.0, "Ribbon 121": -5.0}
+
+                def mic(side, sig):
+                    t_ = MICS[int(round(g[f"HOT Amp Cab {side} Type"]))]
+                    sig = _shelf(sig, "High Shelf", 4000, mic_db[t_] - 8 * g[f"Cab {side} Position"])
+                    return _shelf(sig, "Low Shelf", 150, -6 * g[f"Cab {side} Distance"])
+                x = g["Cab L Level"] * mic("L", x) + g["Cab R Level"] * mic("R", x)
+            elif kind in ("Metal Hellrazer", "Metal Eclipse"):
                 x = sosfilt(butter(1, 1500 + 9000 * v["Tone"].value, "lowpass", fs=SR, output="sos"), x)
                 if v["Pickup"].value >= 0.5:
                     x = _shelf(x, "High Shelf", 2000, 4)
@@ -313,6 +344,10 @@ class FakeLive:
             else:
                 self.master.append(dev)
             return {"loaded": True}
+        if cmd == "delete_device":
+            dev = self.dev(p)
+            self.t(p["track_index"]).devices.remove(dev)
+            return {"deleted": dev[0]}
         if cmd == "get_device_parameters":
             name, ps = self.dev(p)
             return {"device": name, "parameters": [q.as_dict(i) for i, q in enumerate(ps)]}

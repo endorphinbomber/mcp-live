@@ -14,7 +14,7 @@ from typing import Callable
 import optuna
 
 from ..config import ParamSpec
-from ..live.params import LiveParam, resolve
+from ..live.params import LiveParam, resolve, resolve_group
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
@@ -58,11 +58,32 @@ class ToneSearch:
             sampler = optuna.samplers.TPESampler(seed=seed, n_startup_trials=n_startup, multivariate=True,
                                                  group=True)
         self.study = optuna.create_study(direction="minimize", sampler=sampler, study_name=name)
+        self._seed_current()
         self._seed_categoricals()
 
     @property
     def empty(self) -> bool:
         return not self.knobs
+
+    def _seed_current(self) -> None:
+        """First trial = the settings the plug-ins have now, so the search can't end up worse
+        than where it started."""
+        current: dict = {}
+        for knob in self.knobs:
+            if knob.db_range is not None or "{" in knob.spec.pattern:
+                continue
+            members = (resolve_group(knob.spec, knob.params) if knob.spec.group
+                       else [x for x in [resolve(knob.spec, knob.params)] if x is not None])
+            if not members:
+                continue
+            p = members[0]
+            if knob.spec.kind == "categorical":
+                current[self._pname(knob, None)] = int(round(p.value))
+            else:
+                lo, hi = knob.spec.bounds(p.normalized(p.value))
+                current[self._pname(knob, None)] = min(hi, max(lo, p.normalized(p.value)))
+        if current:
+            self.study.enqueue_trial(current)
 
     def _seed_categoricals(self) -> None:
         """Make sure every option of the first categorical (e.g. the amp) is tried once
@@ -88,9 +109,11 @@ class ToneSearch:
         choices: dict[str, dict[str, str]] = {}   # device uid -> {categorical key: label}
         for knob in sorted(self.knobs, key=lambda k: k.spec.kind != "categorical"):
             dev_choices = choices.setdefault(knob.uid, {})
-            p = resolve(knob.spec, knob.params, dev_choices)
-            if p is None:
+            members = (resolve_group(knob.spec, knob.params, dev_choices) if knob.spec.group
+                       else [x for x in [resolve(knob.spec, knob.params, dev_choices)] if x is not None])
+            if not members:
                 continue
+            p = members[0]
             if knob.spec.kind == "categorical":
                 options = p.choices()
                 native = trial.suggest_categorical(self._pname(knob, None), [v for v, _ in options])
@@ -104,9 +127,11 @@ class ToneSearch:
             else:
                 # Conditional knobs (pattern uses {placeholders}) get one distribution per choice.
                 dep = "+".join(dev_choices[k] for k in sorted(dev_choices) if "{" + k + "}" in knob.spec.pattern)
-                lo, hi = knob.spec.range
+                # `span` knobs search around the value the parameter had when the knob was made.
+                lo, hi = knob.spec.bounds(p.normalized(p.value))
                 u = trial.suggest_float(self._pname(knob, dep or None), lo, hi)
-                cand.values.append(Setting(knob.track, knob.device, p.index, p.native(u), f"{p.name}={u:.3f}"))
+                for m in members:   # a group knob moves all its parameters together
+                    cand.values.append(Setting(knob.track, knob.device, m.index, m.native(u), f"{m.name}={u:.3f}"))
         return cand
 
     def tell(self, cand: Candidate, loss: float) -> None:

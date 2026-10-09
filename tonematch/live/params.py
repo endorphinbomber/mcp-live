@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ..config import ParamSpec
 
@@ -49,6 +49,7 @@ class LiveParam:
 class Resolved:
     spec: ParamSpec
     param: LiveParam
+    members: list[LiveParam] = field(default_factory=list)   # all params of a group spec
 
 
 def split_alternatives(pattern: str) -> list[str]:
@@ -103,10 +104,30 @@ def resolve(spec: ParamSpec, params: list[LiveParam], choices: dict[str, str] | 
     return None
 
 
+def resolve_group(spec: ParamSpec, params: list[LiveParam],
+                  choices: dict[str, str] | None = None) -> list[LiveParam]:
+    """All parameters matched by a group spec (any alternative), in index order."""
+    hits: dict[int, LiveParam] = {}
+    for alt in expand_pattern(spec.pattern, choices or {}):
+        rx = re.compile(alt, re.I)
+        for p in params:
+            if rx.search(p.name):
+                hits.setdefault(p.index, p)
+    return [hits[i] for i in sorted(hits)]
+
+
 def resolve_all(specs: list[ParamSpec], params: list[LiveParam],
                 choices: dict[str, str] | None = None) -> tuple[list[Resolved], list[ParamSpec]]:
     resolved, missing, taken = [], [], set()
     for spec in specs:
+        if spec.group:
+            members = [m for m in resolve_group(spec, params, choices) if m.index not in taken]
+            if members:
+                taken.update(m.index for m in members)
+                resolved.append(Resolved(spec, members[0], members))
+            else:
+                missing.append(spec)
+            continue
         p = resolve(spec, params, choices, taken)
         if p is None:
             missing.append(spec)

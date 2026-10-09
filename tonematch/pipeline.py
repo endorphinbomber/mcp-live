@@ -18,7 +18,7 @@ from .analysis.separate import separate
 from .audio import ANALYSIS_SR, load_audio, segment
 from .config import GP_SUFFIXES, Config, ParamSpec, TrackSpec
 from .live.client import LiveClient, LiveError
-from .live.params import LiveParam, resolve, resolve_all
+from .live.params import LiveParam, resolve, resolve_all, resolve_group
 from .live.session import DeviceRef, LiveSession, TakeFailed
 from .match import levels as lv
 from .match.eqfit import EqBand, fit_eq
@@ -220,13 +220,16 @@ class Project:
         return todo
 
     def _load_chain(self, track_index: int, keys: list[str], track_name: str) -> dict[str, int]:
-        existing = self.live.devices(track_index)
-        if len(existing) >= len(keys):
-            self.echo(f"'{track_name}' already has {len(existing)} devices; keeping them")
-            return {k: i for i, k in enumerate(keys)}
+        existing = [d.get("name", "") for d in self.live.devices(track_index)]
+        wanted = [self.cfg.plugin(k).search for k in keys]
         if existing:
-            raise LiveError(f"'{track_name}' has a partial chain ({[d['name'] for d in existing]}); "
-                            "delete its devices or the track and rebuild")
+            if len(existing) >= len(keys) and all(w.lower() in n.lower() for n, w in zip(existing, wanted)):
+                self.echo(f"'{track_name}' already has its chain ({', '.join(existing)}); keeping it")
+                return {k: i for i, k in enumerate(keys)}
+            self.echo(f"  {track_name}: chain is [{', '.join(existing)}], expected [{', '.join(wanted)}] - "
+                      "reloading it (run `tonematch match` again for this track)")
+            for i in reversed(range(len(existing))):
+                self.live.c.send("delete_device", track_index=track_index, device_index=i)
         for k in keys:
             spec = self.cfg.plugin(k)
             self.echo(f"  {track_name}: loading {spec.search}")
@@ -286,7 +289,8 @@ class Project:
                 resolved, missing = resolve_all(spec.params, params)
                 report[f"{t.name}/{key}"] = {
                     "exposed": len(params),
-                    "resolved": {r.spec.key: r.param.name for r in resolved},
+                    "resolved": {r.spec.key: (" + ".join(m.name for m in r.members) if r.members else r.param.name)
+                                 for r in resolved},
                     "missing": [m.key for m in missing],
                     "choices": {r.spec.key: [lbl for _, lbl in r.param.choices()]
                                 for r in resolved if r.spec.kind == "categorical"},
@@ -412,7 +416,8 @@ class Project:
             params = self.live.device_params(self.device_ref(t.name, key))
             for ps in spec.params:
                 # Resolvable now, or after a categorical choice fills its {placeholder}.
-                if resolve(ps, params) is not None or "{" in ps.pattern:
+                found = resolve_group(ps, params) if ps.group else resolve(ps, params)
+                if found or "{" in ps.pattern:
                     knobs.append(Knob(t.name, key, ps, params))
         for out in self.out_tracks(t):
             params = self.live.device_params(self.device_ref(out, "Utility"))

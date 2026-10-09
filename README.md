@@ -19,10 +19,10 @@ Live: build tracks + plug-ins + MIDI ◄─────────────�
 
 | Track | Chain | Notes |
 |---|---|---|
-| **Drums** | Kontakt (MixWave Gojira) → EQ Eight → Glue Compressor → Utility | optional Kontakt multi-outs (Kick/Snare/OH/Room...), whose balance is then optimized too |
+| **Drums** | Kontakt (MixWave Gojira) → EQ Eight → Glue Compressor → Utility | MixWave's mixer (kick, snare, toms, overheads, rooms…) is optimized through Kontakt's host-automation parameters |
 | **Bass** | Kontakt (NI Rickenbacker bass) → Pedal → EQ Eight → Compressor → Utility | |
-| **Gtr L** | Ample Hellrazer → Archetype: Gojira → EQ Eight → Utility | the single MIDI guitar part |
-| **Gtr R** | Ample Metal Eclipse → Archetype: Gojira → EQ Eight → Utility | same part, humanized (±12 ms drift, velocity jitter) - a different guitar on each side makes a convincing double |
+| **Gtr L** | Ample Metal Hellrazer → Archetype Gojira X → EQ Eight → Utility | the single guitar part |
+| **Gtr R** | Ample Metal Hellrazer → Archetype Gojira X → EQ Eight → Utility | same part, humanized (±12 ms drift, velocity jitter) for a convincing double |
 | **Master** | EQ Eight → Glue Compressor → Limiter | |
 
 Faders stay at 0 dB; all gain moves happen on each track's Utility, so the numbers are exact and
@@ -116,6 +116,30 @@ Register both MCP servers (e.g. Claude Desktop `claude_desktop_config.json`):
 
 Claude can then run `tonematch_analyze` → `tonematch_build` → `tonematch_discover` → `tonematch_match`,
 and use the ableton tools for anything by hand. Needs `pip install -e ".[mcp]"`.
+
+## What gets tuned
+
+The `[plugins.*]` sections in `tonematch.toml` define the knobs. `tonematch discover` shows which ones
+were found.
+
+- **Archetype Gojira X** (both guitars; the amp stays on HOT):
+  - Amp: HOT Amp Gain, Bass, Mid, Treble, Presence, Depth, Master.
+  - Pedals: OD (on/off, Dist, Tone, Level) and DRT (on/off, Dist, Filter, Vol).
+  - Mics: the L/R mic type, Cab L/R Position and Distance, and the Cab R Level.
+  - Left alone: Output, which the levels stage handles, plus the gate and the pans.
+- **MixWave Gojira** (Kontakt host-automation `#000…`):
+  - Mixer levels: kick1 `#000`, kick2 `#001`, snare `#002`, hi-hat `#006`, overheads `#014`/`#013`,
+    room `#015`, monoroom `#012`.
+  - Moved together: toms `#003–#005`, and cymbals `#007–#011`.
+  - Also tuned: overhead width `#030`, snare reverb `#050`.
+  - Each knob only moves ±0.2 around the kit's current setting, so the kit's own mix is the starting point.
+- Each search starts from the plug-ins' current settings, so the result is never worse than where it
+  began.
+
+Knob options: `range = [lo, hi]` or `span = 0.2` (normalized 0–1), `kind = "categorical"` for
+switches and selectors, and `group = true` to drive several parameters with one knob.
+`tonematch init --force` rewrites your `tonematch.toml` from the current defaults. It keeps your
+`[project]` and `[analysis]` settings and saves the old file as `tonematch.toml.bak`.
 
 ## Guitar Pro files and palm mutes
 

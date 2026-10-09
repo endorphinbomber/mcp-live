@@ -90,7 +90,11 @@ class Project:
 
     def device_ref(self, track: str, key: str) -> DeviceRef:
         if track == "Master":
-            idx = self.state["build"]["master"][key]
+            idx = self._master_index(key)
+            if idx is None:
+                raise LiveError(f"The Master track has no '{self._device_label(key)}' (it has: "
+                                f"{', '.join(self.master_devices()) or 'no devices'}). "
+                                "Run `tonematch build` or add it by hand.")
             return DeviceRef("Master", -1, idx, key)
         devs = self.state["build"]["tracks"][track]["devices"]
         if key not in devs:
@@ -233,23 +237,39 @@ class Project:
                             f"{[d['name'] for d in loaded]}")
         return {k: i for i, k in enumerate(keys)}
 
-    def _master_device_count(self) -> int:
-        n = 0
+    def master_devices(self) -> list[str]:
+        """Names of the devices on the Master track, in chain order."""
+        names: list[str] = []
         while True:
             try:
-                self.live.c.send("get_master_device_parameters", device_index=n)
+                r = self.live.c.send("get_master_device_parameters", device_index=len(names))
             except LiveError:
-                return n
-            n += 1
+                return names
+            names.append(str(r.get("device", "")))
 
-    def _load_master(self, keys: list[str]) -> dict[str, int]:
-        start = self._master_device_count()
-        prev = self.state.get("build", {}).get("master")
-        if prev and start >= len(prev):
-            return prev
+    def _device_label(self, key: str) -> str:
+        try:
+            return self.cfg.plugin(key).search
+        except KeyError:
+            return key
+
+    def _master_index(self, key: str) -> int | None:
+        """Master devices are found by name each time: Live inserts browser-loaded devices
+        after the selected one, and people edit the master chain, so indices go stale."""
+        want = self._device_label(key).lower()
+        names = [n.lower() for n in self.master_devices()]
+        for match in (lambda n: n == want, lambda n: n.startswith(want)):
+            for i, n in enumerate(names):
+                if match(n):
+                    return i
+        return None
+
+    def _load_master(self, keys: list[str]) -> dict[str, int | None]:
         for k in keys:
-            self.live.load_device(-1, self.cfg.plugin(k).search, stock=True)
-        return {k: start + i for i, k in enumerate(keys)}
+            if self._master_index(k) is None:
+                self.echo(f"  Master: loading {self._device_label(k)}")
+                self.live.load_device(-1, self._device_label(k), stock=True)
+        return {k: self._master_index(k) for k in keys}
 
     # ================================================================ discover
     def discover(self) -> dict:
@@ -455,6 +475,9 @@ class Project:
     def _write_eq(self, track: str, bands: list[EqBand]) -> None:
         ref = self.device_ref(track, "EQ Eight")
         params = {p.name: p for p in self.live.device_params(ref)}
+        if eq_param(1, "Filter Type") not in params:
+            raise LiveError(f"'{track}': the device at position {ref.device_index + 1} isn't an EQ Eight "
+                            f"(parameters: {', '.join(list(params)[:6])}...). Check the device chain order.")
         off = [(ref, eq_param(b, "Filter On"), 0.0) for b in range(1, EQ_BANDS + 1)
                if eq_param(b, "Filter On") in params]
         self.live.set_params(off)
@@ -521,19 +544,23 @@ class Project:
 
     # -- master -----------------------------------------------------------
     def stage_master(self) -> None:
-        keys = self.state["build"]["master"]
         regions = list(range(len(self.regions())))
         ref_mix = [self.ref_features(i, "mix") for i in regions]
         feats = self.render_master(regions)
-        if "EQ Eight" in keys:
+        has_eq = self._master_index("EQ Eight") is not None
+        has_limiter = self._master_index("Limiter") is not None
+        for name, present in (("EQ Eight", has_eq), ("Limiter", has_limiter)):
+            if not present:
+                self.echo(f"  master: no {name} on the Master track - skipping that step")
+        if has_eq:
             target = (np.mean([f.tone_curve() for f in ref_mix], axis=0)
                       - np.mean([f.tone_curve() for f in feats], axis=0))
             bands = fit_eq(target, weights_for("mix"), 4, 3.0)
             prev = [EqBand(**b) for b in self.applied()["eq"].get("Master", [])]
             self._write_eq("Master", _merge_eq(prev, bands))
             self.echo("  master EQ: " + ", ".join(f"{b.kind} {b.freq:.0f}Hz {b.gain_db:+.1f}dB" for b in bands))
-        if "Limiter" in keys:
-            ref = DeviceRef("Master", -1, keys["Limiter"], "Limiter")
+        if has_limiter:
+            ref = self.device_ref("Master", "Limiter")
             params = {p.name: p for p in self.live.device_params(ref)}
             if "Gain" not in params:
                 raise LiveError(f"Limiter exposes no 'Gain' parameter (has {sorted(params)})")

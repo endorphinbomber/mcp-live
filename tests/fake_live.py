@@ -139,6 +139,7 @@ class FakeLive:
         self.missing_takes: set[int] = set()     # take numbers never written
         # Like real Live: a recording stays an unfinished 64 KiB-chunked file until its track
         # is disarmed or deleted. `never_finalize` takes never get completed.
+        self.master_insert_front = False
         self.defer_finalize = False
         self.never_finalize: set[int] = set()
         self.pending: dict[str, tuple[Path, np.ndarray, int]] = {}   # track name -> (path, audio, take)
@@ -304,7 +305,13 @@ class FakeLive:
             self.t(p["track_index"]).devices.append(make_device(p["item_uri"].split("#", 1)[1]))
             return {"loaded": True}
         if cmd == "load_device_to_master":
-            self.master.append(make_device(p["item_uri"].split("#", 1)[1]))
+            dev = make_device(p["item_uri"].split("#", 1)[1])
+            # Live inserts after the selected device; `master_insert_front` mimics having the
+            # first device selected, which scrambles the order of a chain loaded one by one.
+            if self.master_insert_front:
+                self.master.insert(0, dev)
+            else:
+                self.master.append(dev)
             return {"loaded": True}
         if cmd == "get_device_parameters":
             name, ps = self.dev(p)

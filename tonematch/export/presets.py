@@ -6,6 +6,7 @@ import json
 import re
 from pathlib import Path
 
+from ..live.client import LiveError
 from ..live.params import resolve_all
 
 _SAFE = re.compile(r"[^A-Za-z0-9 ._-]+")
@@ -38,8 +39,11 @@ def export_presets(project) -> Path:
             if resolved:
                 summary.append(f"\n### {track} - {cfg.plugin(key).search}\n")
                 summary += [f"- **{r.param.name}**: {r.param.display or round(r.param.value, 3)}" for r in resolved]
-    for key, idx in build.get("master", {}).items():
-        ref = project.device_ref("Master", key)
+    for key in build.get("master", {}):
+        try:
+            ref = project.device_ref("Master", key)
+        except LiveError:
+            continue  # removed from the master chain since the build
         params = live.device_params(ref)
         (out / "Master").mkdir(exist_ok=True)
         (out / "Master" / f"{_safe(key)}.json").write_text(json.dumps(

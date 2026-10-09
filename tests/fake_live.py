@@ -157,7 +157,6 @@ class FakeLive:
         # Like real Live: a recording stays an unfinished 64 KiB-chunked file until its track
         # is disarmed or deleted. `never_finalize` takes never get completed.
         self.master_insert_front = False
-        self.finalize_on_disarm = True          # False: only deleting the track finishes the file
         self.defer_finalize = False
         self.never_finalize: set[int] = set()
         self.pending: dict[str, tuple[Path, np.ndarray, int]] = {}   # track name -> (path, audio, take)
@@ -391,7 +390,7 @@ class FakeLive:
             return {}
         if cmd == "set_track_arm":
             self.t(p["track_index"]).arm = bool(p["arm"])
-            if not p["arm"] and self.finalize_on_disarm:
+            if not p["arm"]:
                 self._finalize(self.t(p["track_index"]).name)
             return {"arm": True}
         if cmd == "create_clip":

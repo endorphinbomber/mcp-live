@@ -48,8 +48,6 @@ class Project:
         self._song: Song | None = None
         self._track_idx: dict[str, int] | None = None
         self._stage = ""
-        self._rig: dict[str, int] | None = None
-        self._reuse_tracks = bool(cfg.match.get("reuse_recording_tracks", True))
         self.vocal_space = bool(cfg.match.get("leave_vocal_space", False))
 
     # ----------------------------------------------------------------- helpers
@@ -367,19 +365,10 @@ class Project:
         retries = int(self.cfg.match.get("take_retries", 2))
         log = self.cfg.workdir / "failed_takes.log"
         for attempt in range(retries + 1):
-            rig = self._stage_rig(sources)
             try:
                 return self.live.record(sources, region.start_beat, region.end_beat,
-                                        finalize_timeout_s=float(self.cfg.match.get("finalize_timeout_s", 10.0)),
-                                        rig=rig)
+                                        finalize_timeout_s=float(self.cfg.match.get("finalize_timeout_s", 10.0)))
             except TakeFailed as e:
-                if rig is not None:
-                    # Live didn't finish the files while the tracks stayed in the set: go back to
-                    # fresh recording tracks per take (deleting them finishes the files).
-                    self._reuse_tracks = False
-                    self._close_rig()
-                    self.echo("  Live didn't release the recording on reused tracks - using new tracks per take "
-                              "for the rest of this run")
                 log.parent.mkdir(parents=True, exist_ok=True)
                 with open(log, "a", encoding="utf-8") as fh:
                     fh.write(json.dumps({"time": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -389,26 +378,6 @@ class Project:
                     raise LiveError(f"Take failed {retries + 1} times ({e}). Details: {log}") from None
                 self.echo(f"  take failed ({e}) - recording again ({attempt + 1}/{retries})")
         raise AssertionError("unreachable")
-
-    def _stage_rig(self, sources: list[str]) -> dict[str, int] | None:
-        """Recording tracks reused for every take of the running stage (None = per-take tracks)."""
-        if not self._stage or not self._reuse_tracks:
-            return None
-        if self._rig is None:
-            self._rig = {}
-            removed = self.live.remove_stale_bounce_tracks()
-            if removed:
-                self._track_idx = None
-                self.echo(f"  removed {removed} leftover recording track(s)")
-        missing = [s for s in sources if s not in self._rig]
-        if missing:
-            self._rig.update(self.live.open_bounce_tracks(missing))
-        return self._rig
-
-    def _close_rig(self) -> None:
-        if self._rig:
-            self.live.close_bounce_tracks(self._rig)
-        self._rig = None
 
     # ================================================================== stages
     def match(self, stages: list[str] | None = None) -> None:
@@ -420,11 +389,7 @@ class Project:
                 raise ValueError(f"Unknown stage {st!r}; choose from {sorted(handlers)}")
             self.echo(f"== stage: {st}")
             self._stage = st
-            try:
-                handlers[st]()
-            finally:
-                self._close_rig()          # recording tracks live only for one stage
-                self._stage = ""
+            handlers[st]()
             self.state.checkpoint(st)
 
     # -- levels -----------------------------------------------------------

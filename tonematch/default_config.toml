@@ -24,6 +24,7 @@ tone_trials = 60                 # optuna trials = real-time takes (all tracks r
 tone_regions = 1                 # regions used per tone take (more = slower, more robust)
 level_tolerance_db = 0.5
 finalize_timeout_s = 10.0        # max wait per take for Live to finish writing a recording (normally < 1 s)
+reuse_recording_tracks = true    # keep the recording tracks for a whole stage (much faster than per take)
 take_retries = 2                 # re-record a take whose recording can't be read (logged to work/failed_takes.log)
 eq_bands = 6                     # EQ Eight bands used for residual correction
 eq_max_gain_db = 6.0

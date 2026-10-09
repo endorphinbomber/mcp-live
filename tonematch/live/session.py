@@ -321,15 +321,57 @@ class LiveSession:
                     destination_time=0.0)
 
     # -- recording -------------------------------------------------------
+    # -- recording tracks ---------------------------------------------------
+    def open_bounce_tracks(self, sources: list[str]) -> dict[str, int]:
+        """Create one recording track per source: input = the source's Post Mixer output
+        ("Resampling" = master), monitoring off, not armed. Returns {source: track index}."""
+        rig: dict[str, int] = {}
+        try:
+            for src in sources:
+                idx = self.create_track(f"tm-bounce {src}", midi=False)
+                rig[src] = idx
+                try:
+                    self.route_input(idx, src, channel_hint=None if src == "Resampling" else "Post Mixer")
+                except LiveError:
+                    # No "Post Mixer" channel on this Live build: the default tap is fine.
+                    self.route_input(idx, src)
+                self.c.send("set_track_monitoring", track_index=idx, state=MONITOR_OFF)
+        except Exception:
+            self.close_bounce_tracks(rig)
+            raise
+        return rig
+
+    def close_bounce_tracks(self, rig: dict[str, int]) -> None:
+        for idx in sorted(rig.values(), reverse=True):
+            try:
+                self.c.send("delete_track", track_index=idx)
+            except LiveError:
+                pass
+        rig.clear()
+
+    def remove_stale_bounce_tracks(self) -> int:
+        """Delete recording tracks left behind by an interrupted run."""
+        stale = [i for i, n in enumerate(self.track_names()) if n.startswith("tm-bounce ")]
+        for i in reversed(stale):
+            try:
+                self.c.send("delete_track", track_index=i)
+            except LiveError:
+                pass
+        return len(stale)
+
+    def _clips(self, rig: dict[str, int], sources: list[str]) -> dict[str, list[dict]]:
+        res = self.c.batch([("get_arrangement_clips", {"track_index": rig[s]}) for s in sources])
+        return {s: r.get("clips", []) for s, r in zip(sources, res)}
+
     def record(self, sources: list[str], start_beat: float, end_beat: float,
-               settle_s: float = 0.3, finalize_timeout_s: float = 10.0) -> dict[str, np.ndarray]:
+               settle_s: float = 0.3, finalize_timeout_s: float = 10.0,
+               rig: dict[str, int] | None = None) -> dict[str, np.ndarray]:
         """Bounce several track outputs (or "Resampling" = master) in ONE real-time pass and
         return each take's audio (stereo, analysis rate, including the pre-roll).
 
-        One temporary audio track per source, input = that track's Post Mixer output,
-        monitoring off, armed; arrangement record over [start_beat, end_beat].
-        Live keeps writing a recording until its track is disarmed/removed, so the tracks are
-        disarmed and deleted first, then each file is read as soon as it is complete.
+        With `rig` (from open_bounce_tracks) the recording tracks are reused: arm, record,
+        disarm (Live finishes the files), read, then remove the take's clips. Without it,
+        temporary tracks are created and deleted for this take only.
         Unreadable takes raise TakeFailed.
         """
         info = self.c.send("get_session_info")
@@ -339,44 +381,49 @@ class LiveSession:
         duration = (end_beat - start_beat + pre) * 60.0 / tempo
         if duration > MAX_RECORD_SECONDS:
             raise LiveError(f"Region is {duration:.0f}s; keep it under {MAX_RECORD_SECONDS:.0f}s")
-        self.c.send("stop_all_clips")
-        self.c.send("back_to_arranger")
-        bounce: dict[str, int] = {}
+        own = rig is None
+        if own:
+            rig = self.open_bounce_tracks(sources)
+        tracks = [rig[s] for s in sources]
         paths: dict[str, Path | None] = {}
+        recorded = False
         try:
-            for src in sources:
-                idx = self.create_track(f"tm-bounce {src}", midi=False)
-                bounce[src] = idx
-                try:
-                    self.route_input(idx, src, channel_hint=None if src == "Resampling" else "Post Mixer")
-                except LiveError:
-                    # No "Post Mixer" channel on this Live build: the default tap is fine.
-                    self.route_input(idx, src)
-                self.c.send("set_track_monitoring", track_index=idx, state=MONITOR_OFF)
-                self.c.send("set_track_arm", track_index=idx, arm=True)
-            self.c.send("set_current_song_time", time=start_beat - pre)
-            self.c.send("set_record_mode", enabled=True)
-            self.c.send("start_playback")
+            self.c.batch([("stop_all_clips", {}), ("back_to_arranger", {})]
+                         + [("set_track_arm", {"track_index": i, "arm": True}) for i in tracks]
+                         + [("set_current_song_time", {"time": start_beat - pre})])
+            self.c.batch([("set_record_mode", {"enabled": True}), ("start_playback", {})])
+            recorded = True
             time.sleep(duration + 0.3)
-            self.c.send("set_record_mode", enabled=False)
-            self.c.send("stop_playback")
+            self.c.batch([("set_record_mode", {"enabled": False}), ("stop_playback", {})])
             time.sleep(settle_s)
-            for idx in bounce.values():
-                try:
-                    self.c.send("set_track_arm", track_index=idx, arm=False)
-                except LiveError:
-                    pass
-            for src, idx in bounce.items():
-                clips = self.c.send("get_arrangement_clips", track_index=idx).get("clips", [])
+            self.c.batch([("set_track_arm", {"track_index": i, "arm": False}) for i in tracks])
+            for src, clips in self._clips(rig, sources).items():
                 files = [c["file_path"] for c in clips if c.get("is_audio_clip") and c.get("file_path")]
                 paths[src] = Path(files[-1]) if files else None
+            if own:
+                self.close_bounce_tracks(rig)       # deleting the tracks also finishes the files
+                return read_takes(paths, min_seconds=0.9 * duration, timeout_s=finalize_timeout_s)
+            try:
+                return read_takes(paths, min_seconds=0.9 * duration, timeout_s=finalize_timeout_s)
+            except TakeFailed:
+                # Removing the clips may make Live let go of the files; one short last look.
+                self._delete_clips(rig, sources)
+                recorded = False
+                return read_takes(paths, min_seconds=0.9 * duration, timeout_s=min(2.0, finalize_timeout_s))
         finally:
-            for idx in sorted(bounce.values(), reverse=True):
-                try:
-                    self.c.send("delete_track", track_index=idx)
-                except LiveError:
-                    pass
-        return read_takes(paths, min_seconds=0.9 * duration, timeout_s=finalize_timeout_s)
+            if own:
+                self.close_bounce_tracks(rig)
+            elif recorded:
+                self._delete_clips(rig, sources)
+
+    def _delete_clips(self, rig: dict[str, int], sources: list[str]) -> None:
+        """Remove the take's clips from reused recording tracks, so the set stays clean."""
+        try:
+            clips = self._clips(rig, sources)
+            self.c.batch([("delete_arrangement_clip", {"track_index": rig[s], "arrangement_clip_index": j})
+                          for s in sources for j in reversed(range(len(clips[s])))])
+        except LiveError:
+            pass
 
     @staticmethod
     def preroll_seconds(start_beat: float, tempo: float) -> float:

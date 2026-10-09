@@ -83,7 +83,9 @@ def test_alignment_recovers_offset():
     assert al.offset_s == pytest.approx(offset, abs=0.03)
     assert al.scale == 1.0
     regions = pick_regions(song, al, len(audio) / SR, bars=4, count=2)
-    assert len(regions) == 2 and regions[0].end_beat <= regions[1].start_beat
+    assert len(regions) == 2
+    a, b = sorted(regions, key=lambda r: r.start_beat)
+    assert a.end_beat <= b.start_beat
 
 
 def test_humanize_is_bounded_and_deterministic():

@@ -373,7 +373,14 @@ class LiveSession:
                 self.c.send("set_track_arm", track_index=idx, arm=True)
             self.c.send("set_current_song_time", time=start_beat - pre)
             self.c.send("set_record_mode", enabled=True)
-            self.c.send("start_playback")
+            # continue_playing plays from the playhead; start_playback would start at Live's
+            # start marker (usually bar 1) whatever the playhead says.
+            self.c.send("continue_playing")
+            at = self.c.send("get_session_info").get("current_song_time")
+            if at is not None and not (start_beat - pre - 1.0 <= float(at) <= end_beat):
+                self.c.send("set_record_mode", enabled=False)
+                self.c.send("stop_playback")
+                raise LiveError(f"Live started playing at beat {float(at):g} instead of {start_beat - pre:g}")
             time.sleep(duration + 0.3)
             self.c.send("set_record_mode", enabled=False)
             self.c.send("stop_playback")

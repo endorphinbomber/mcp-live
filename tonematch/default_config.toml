@@ -15,7 +15,8 @@ outdir = "out"                   # presets, report
 separator = "demucs"             # "demucs" (htdemucs_6s) or "none" (provide [analysis.stems])
 demucs_model = "htdemucs_6s"
 region_bars = 8                  # length of the comparison region(s)
-regions = 2                      # how many regions (densest + most contrasting)
+regions = 2                      # how many regions: the busiest, then the most different-sounding ones
+# region_gap_bars = 8            # min. distance between regions (default: one region length)
 # stems = { drums = "stems/drums.wav", bass = "stems/bass.wav", guitar = "stems/guitar.wav" }
 
 [match]

@@ -49,6 +49,7 @@ class Project:
         self._track_idx: dict[str, int] | None = None
         self._stage = ""
         self.vocal_space = bool(cfg.match.get("leave_vocal_space", False))
+        self._live_tempo: float | None = None
 
     # ----------------------------------------------------------------- helpers
     @property
@@ -154,8 +155,7 @@ class Project:
             if t.role not in roles:
                 raise ValueError(f"MIDI has no part for role {t.role!r} (parts: {[p.name for p in song.parts]})")
         if len(song.tempos) > 1:
-            self.echo(f"WARNING: MIDI has {len(song.tempos)} tempo changes; Live will play at "
-                      f"{song.bpm:g} BPM throughout and regions are matched with a linear fit.")
+            self.echo(f"Song has {len(song.tempos)} tempos; each region is recorded at its own tempo.")
         anchor = stem_audio.get("drums", ref)
         alignment = align_mod.align(song, ref, drums_part=roles.get("drums"),
                                     ref_env=align_mod.onset_envelope(anchor))
@@ -169,7 +169,8 @@ class Project:
         if "scale" in a:
             alignment.scale = float(a["scale"])
         regions = align_mod.pick_regions(song, alignment, len(ref) / ANALYSIS_SR,
-                                         bars=int(a.get("region_bars", 8)), count=int(a.get("regions", 2)))
+                                         bars=int(a.get("region_bars", 8)), count=int(a.get("regions", 2)),
+                                         reference=ref, gap_bars=a.get("region_gap_bars"))
         instrumental = _minus(ref, load_audio(stems["vocals"])) if "vocals" in stems else None
         features: dict[str, dict] = {}
         for i, r in enumerate(regions):
@@ -179,7 +180,8 @@ class Project:
                 per["instrumental"] = analyze_audio(segment(instrumental, r.ref_start_s, r.ref_end_s)).to_dict()
             features[str(i)] = per
             self.echo(f"Region {i + 1}: beats {r.start_beat:g}-{r.end_beat:g} "
-                      f"(ref {r.ref_start_s:.1f}-{r.ref_end_s:.1f}s), mix {per['mix']['lufs']:.1f} LUFS")
+                      f"(ref {r.ref_start_s:.1f}-{r.ref_end_s:.1f}s, {r.bpm:g} BPM), "
+                      f"mix {per['mix']['lufs']:.1f} LUFS - {r.why}")
         self.state["analysis"] = {
             "alignment": alignment.to_dict(),
             "regions": [r.to_dict() for r in regions],
@@ -333,10 +335,10 @@ class Project:
     def render(self, tracks: list[TrackSpec], region_ids: list[int]) -> dict[str, list[Features]]:
         """Record every given track (with its multi-outs summed) over each region."""
         out: dict[str, list[Features]] = defaultdict(list)
-        tempo = float(self.live.c.send("get_session_info").get("tempo", self.song.bpm))
         regions = self.regions()
         for ri in region_ids:
             r = regions[ri]
+            tempo = self._use_tempo(r)
             sources = [s for t in tracks for s in self.sources(t)]
             takes = self._take(sources, r)
             pre = LiveSession.preroll_seconds(r.start_beat, tempo)
@@ -351,15 +353,34 @@ class Project:
         return out
 
     def render_master(self, region_ids: list[int]) -> list[Features]:
-        tempo = float(self.live.c.send("get_session_info").get("tempo", self.song.bpm))
         feats = []
         for ri in region_ids:
             r = self.regions()[ri]
+            tempo = self._use_tempo(r)
             audio = self._take(["Resampling"], r)["Resampling"]
             pre = LiveSession.preroll_seconds(r.start_beat, tempo)
             feats.append(analyze_audio(segment(audio, pre, pre + (r.end_beat - r.start_beat) * 60 / tempo)))
         self.state.data.setdefault("last_render", {})["Master"] = [f.to_dict() for f in feats]
         return feats
+
+    def region_bpm(self, r: align_mod.Region) -> float:
+        return r.bpm or align_mod.region_bpm(self.song, r.start_beat, r.end_beat)
+
+    def _use_tempo(self, r: align_mod.Region) -> float:
+        """Play the region at the song's own tempo there (Live has one tempo for the set)."""
+        bpm = self.region_bpm(r)
+        if self._live_tempo is None or abs(self._live_tempo - bpm) > 1e-3:
+            self.live.c.send("set_tempo", tempo=bpm)
+            self._live_tempo = bpm
+        return bpm
+
+    def _restore_tempo(self) -> None:
+        if self._live_tempo is not None and abs(self._live_tempo - self.song.bpm) > 1e-3:
+            try:
+                self.live.c.send("set_tempo", tempo=self.song.bpm)
+            except (LiveError, OSError):
+                pass
+        self._live_tempo = None
 
     def _take(self, sources: list[str], region: align_mod.Region) -> dict[str, np.ndarray]:
         """Record one take; if a recording can't be read, log why and record it again."""
@@ -396,6 +417,7 @@ class Project:
                 self.state.checkpoint(st)
         finally:
             self._stage = ""
+            self._restore_tempo()
             self._disarm()
 
     def _disarm(self) -> None:
@@ -484,8 +506,8 @@ class Project:
         if wanted > len(regions):
             self.echo(f"  WARNING: tone_regions = {wanted}, but the analysis made only {len(regions)} region(s). "
                       f"Set [analysis] regions = {wanted} and run `tonematch analyze` to use more.")
-        tempo = float(self.song.bpm)
-        take_s = sum((regions[i].end_beat - regions[i].start_beat) * 60.0 / tempo + 4 for i in region_ids)
+        take_s = sum((regions[i].end_beat - regions[i].start_beat) * 60.0 / self.region_bpm(regions[i]) + 4
+                     for i in region_ids)
         self.echo(f"  {n_trials} trials x {len(region_ids)} region(s) ("
                   + ", ".join(f"beats {regions[i].start_beat:g}-{regions[i].end_beat:g}" for i in region_ids)
                   + f"): every trial records each region and scores the average; "

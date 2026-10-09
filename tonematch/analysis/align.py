@@ -34,6 +34,8 @@ class Region:
     end_beat: float
     ref_start_s: float
     ref_end_s: float
+    bpm: float = 0.0          # the song's average tempo over the region (0 = not stored, older analysis)
+    why: str = ""             # how the region was chosen
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -99,30 +101,104 @@ def align(song: Song, reference: np.ndarray, drums_part=None, max_offset_s: floa
     return best
 
 
+BANDS_HZ = ((20.0, 250.0), (250.0, 2000.0), (2000.0, 16000.0))
+FEATURES = ("palm-muted", "busier", "higher notes", "louder", "more low end", "more mids", "brighter")
+
+
+def _band_frames(reference: np.ndarray, sr: int = ANALYSIS_SR, n: int = 4096) -> np.ndarray:
+    """Per-frame band energies of the reference: (frames, len(BANDS_HZ))."""
+    x = mono(reference)
+    frames = len(x) // n
+    if frames == 0:
+        return np.zeros((0, len(BANDS_HZ)))
+    spec = np.abs(np.fft.rfft(x[: frames * n].reshape(frames, n) * np.hanning(n), axis=1)) ** 2
+    freqs = np.fft.rfftfreq(n, 1.0 / sr)
+    return np.stack([spec[:, (freqs >= lo) & (freqs < hi)].sum(axis=1) for lo, hi in BANDS_HZ], axis=1)
+
+
+def _describe(song: Song, a: float, b: float, bands: np.ndarray | None, ra: float, rb: float,
+              n: int = 4096) -> np.ndarray:
+    """What a window sounds/plays like: palm-mute share, note density, pitch, loudness, band balance."""
+    pitched = [x for p in song.parts if not p.is_percussion for x in p.notes if a <= x.start < b]
+    every = sum(1 for p in song.parts for x in p.notes if a <= x.start < b)
+    pm = float(np.mean([bool(x.palm_mute) for x in pitched])) if pitched else 0.0
+    pitch = float(np.mean([x.pitch for x in pitched])) if pitched else 0.0
+    out = [pm, every / max(b - a, 1e-9), pitch]
+    if bands is not None and len(bands):
+        lo, hi = int(ra * ANALYSIS_SR / n), max(int(rb * ANALYSIS_SR / n), int(ra * ANALYSIS_SR / n) + 1)
+        e = bands[lo:hi].mean(axis=0) + 1e-12
+        total = e.sum()
+        out += [10 * np.log10(total), *(10 * np.log10(e / total))]
+    else:
+        out += [0.0, 0.0, 0.0, 0.0]
+    return np.asarray(out)
+
+
+def _contrast_words(d: np.ndarray) -> str:
+    words = [(FEATURES[i] if v > 0 else {"palm-muted": "more open", "busier": "sparser", "higher notes": "lower notes",
+                                         "louder": "quieter", "more low end": "less low end",
+                                         "more mids": "fewer mids", "brighter": "darker"}[FEATURES[i]], abs(v))
+             for i, v in enumerate(d) if abs(v) >= 0.5]
+    words.sort(key=lambda w: -w[1])
+    return ", ".join(w for w, _ in words[:3]) or "a different part of the song"
+
+
+def region_bpm(song: Song, start_beat: float, end_beat: float) -> float:
+    """The song's average tempo over [start, end] (follows tempo changes)."""
+    secs = song.beats_to_seconds(end_beat) - song.beats_to_seconds(start_beat)
+    return (end_beat - start_beat) * 60.0 / secs if secs > 0 else song.bpm
+
+
 def pick_regions(song: Song, alignment: Alignment, ref_duration_s: float, bars: int = 8,
-                 count: int = 2) -> list[Region]:
-    """Choose the densest non-overlapping windows where every part plays."""
+                 count: int = 2, reference: np.ndarray | None = None,
+                 gap_bars: float | None = None) -> list[Region]:
+    """First the busiest window where every part plays; then, at least `gap_bars` (default: one
+    region length) away from the others, the window that sounds most different from them
+    (palm mutes vs open, register, density, loudness and band balance of the reference).
+    Returned in that order, so `tone_regions = 1` uses the busiest one."""
     bpb = song.beats_per_bar()
     length = bars * bpb
-    total = song.end_beat
-    candidates = []
+    gap = (bars if gap_bars is None else gap_bars) * bpb
+    bands = _band_frames(reference) if reference is not None else None
+    cands = []
     start = 0.0
-    while start + length <= total + 1e-9:
+    while start + length <= song.end_beat + 1e-9:
         end = start + length
         active = [sum(1 for n in p.notes if start <= n.start < end) for p in song.parts]
-        ref_a, ref_b = alignment.ref_time(song.beats_to_seconds(start)), alignment.ref_time(
-            song.beats_to_seconds(end))
-        if ref_a >= 0 and ref_b <= ref_duration_s:
+        ra = alignment.ref_time(song.beats_to_seconds(start))
+        rb = alignment.ref_time(song.beats_to_seconds(end))
+        if ra >= 0 and rb <= ref_duration_s:
             coverage = sum(1 for a in active if a > 0) / max(1, len(active))
-            candidates.append((coverage, sum(active), start, end, ref_a, ref_b))
+            cands.append({"a": start, "b": end, "ra": ra, "rb": rb, "coverage": coverage,
+                          "notes": sum(active), "desc": _describe(song, start, end, bands, ra, rb)})
         start += bpb
-    candidates.sort(key=lambda c: (c[0], c[1]), reverse=True)
-    regions: list[Region] = []
-    for _, _, a, b, ra, rb in candidates:
-        if all(b <= r.start_beat or a >= r.end_beat for r in regions):
-            regions.append(Region(a, b, ra, rb))
-        if len(regions) == count:
-            break
-    if not regions:
+    if not cands:
         raise ValueError("No region of the MIDI maps inside the reference; check the alignment")
-    return sorted(regions, key=lambda r: r.start_beat)
+    best_cov = max(c["coverage"] for c in cands)
+    full = [c for c in cands if c["coverage"] == best_cov]
+    most = max(c["notes"] for c in full)
+    pool = [c for c in full if c["notes"] >= 0.4 * most]       # skip near-empty passages
+    desc = np.stack([c["desc"] for c in cands])
+    scale = desc.std(axis=0)
+    scale[scale < 1e-9] = np.inf                                 # a feature that never changes counts 0
+    for c in cands:
+        c["z"] = (c["desc"] - desc.mean(axis=0)) / scale
+
+    first = max(pool, key=lambda c: (c["notes"], -c["a"]))
+    chosen = [dict(first, why="busiest section")]
+
+    def apart(c, g):
+        return all(c["b"] + g <= x["a"] or c["a"] >= x["b"] + g for x in chosen)
+
+    while len(chosen) < count:
+        for group, g in ((pool, gap), (pool, 0.0), (cands, 0.0)):
+            options = [c for c in group if apart(c, g)]
+            if options:
+                break
+        else:
+            break
+        nxt = max(options, key=lambda c: (min(float(np.linalg.norm(c["z"] - x["z"])) for x in chosen), c["notes"]))
+        ref_z = np.mean([x["z"] for x in chosen], axis=0)
+        chosen.append(dict(nxt, why="contrast: " + _contrast_words(nxt["z"] - ref_z)))
+    return [Region(c["a"], c["b"], c["ra"], c["rb"], bpm=round(region_bpm(song, c["a"], c["b"]), 3), why=c["why"])
+            for c in chosen]

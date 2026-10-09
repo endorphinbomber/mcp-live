@@ -108,7 +108,12 @@ any earlier state back into Live.
 Takes are recorded in real time. One 8-bar region at 120 BPM is 16 s, so 40 tone trials take about
 11 minutes, and a full `match` usually takes 20-40 minutes. `tone_regions` multiplies this: every trial records each
 tone region in turn and is scored on the average, so 60 trials with `tone_regions = 2` are 120 takes.
-`tone_regions` can't exceed `[analysis] regions` (re-run `analyze` after raising that). You can leave Live alone while it runs,
+`tone_regions` can't exceed `[analysis] regions` (re-run `analyze` after raising that).
+
+`analyze` picks the busiest section first, then the sections that sound most different from it (palm-muted
+vs open, register, loudness, low end vs brightness), at least one region length apart. It prints why each
+was picked. With `tone_regions = 1` the busiest is used. If the song changes tempo, Live is switched to each
+region's own tempo while recording it, and set back to the song's first tempo afterwards. You can leave Live alone while it runs,
 but don't touch the transport.
 
 ### Saving presets and the template

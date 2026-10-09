@@ -146,6 +146,8 @@ class FakeLive:
         self.tracks: list[Track] = []
         self.master: list[tuple[str, list[P]]] = []
         self.tempo = 120.0
+        self.song_time = 0.0
+        self.played_from: list[float] = []          # playhead (beats) at each playback start
         self.sig = (4, 4)
         self.record_mode = False
         self.dir = Path(tempfile.mkdtemp(prefix="fakelive-"))
@@ -299,7 +301,7 @@ class FakeLive:
                 results.append({"type": c["type"], "result": self.handle(c["type"], c.get("params", {}))})
             return {"executed": len(results), "results": results}
         if cmd == "get_session_info":
-            return {"tempo": self.tempo, "track_count": len(self.tracks), "live_version": "12.2-fake",
+            return {"tempo": self.tempo, "current_song_time": self.song_time, "track_count": len(self.tracks), "live_version": "12.2-fake",
                     "bridge_version": "1.8.1"}
         if cmd == "set_tempo":
             self.tempo = float(p["tempo"])
@@ -424,7 +426,17 @@ class FakeLive:
         if cmd == "stop_playback":
             self._finish_recording()
             return {}
-        if cmd in ("stop_all_clips", "back_to_arranger", "set_current_song_time", "start_playback"):
+        if cmd == "set_current_song_time":
+            self.song_time = float(p.get("time", 0.0))
+            return {}
+        if cmd == "start_playback":                    # like Live: from the start marker
+            self.song_time = 0.0
+            self.played_from.append(self.song_time)
+            return {}
+        if cmd == "continue_playing":                  # from the playhead
+            self.played_from.append(self.song_time)
+            return {}
+        if cmd in ("stop_all_clips", "back_to_arranger"):
             return {}
         raise Exception(f"fake: unknown command {cmd}")
 

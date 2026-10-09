@@ -462,7 +462,18 @@ class Project:
     def stage_tone(self) -> None:
         m = self.cfg.match
         n_trials = int(m.get("tone_trials", 40))
-        region_ids = list(range(min(int(m.get("tone_regions", 1)), len(self.regions()))))
+        regions = self.regions()
+        wanted = max(1, int(m.get("tone_regions", 1)))
+        region_ids = list(range(min(wanted, len(regions))))
+        if wanted > len(regions):
+            self.echo(f"  WARNING: tone_regions = {wanted}, but the analysis made only {len(regions)} region(s). "
+                      f"Set [analysis] regions = {wanted} and run `tonematch analyze` to use more.")
+        tempo = float(self.song.bpm)
+        take_s = sum((regions[i].end_beat - regions[i].start_beat) * 60.0 / tempo + 4 for i in region_ids)
+        self.echo(f"  {n_trials} trials x {len(region_ids)} region(s) ("
+                  + ", ".join(f"beats {regions[i].start_beat:g}-{regions[i].end_beat:g}" for i in region_ids)
+                  + f"): every trial records each region and scores the average; "
+                  f"{n_trials * len(region_ids)} takes, about {n_trials * take_s / 60:.0f} min")
         searches, tracks = [], []
         for i, t in enumerate(self.cfg.tracks):
             knobs = self._knobs(t)
@@ -475,19 +486,25 @@ class Project:
         if not searches:
             return
         best_seen: dict[str, float] = {}
+        per_region: dict[str, list[float]] = {}
 
         def evaluate(cands: dict[str, Candidate]) -> dict[str, float]:
             self._apply([s for c in cands.values() for s in c.values])
             feats = self.render(tracks, region_ids)
-            losses = {}
-            return {t.name: self._mean_loss(feats[t.name], t, region_ids) for t in tracks}
+            per_region.clear()
+            per_region.update({t.name: self._region_losses(feats[t.name], t, region_ids) for t in tracks})
+            return {k: float(np.mean(v)) for k, v in per_region.items()}
 
         def on_round(i: int, losses: dict[str, float]) -> None:
             for k, v in losses.items():
                 best_seen[k] = min(best_seen.get(k, math.inf), v)
-            self.state.log("tone", {"trial": i, "losses": losses})
-            self.echo(f"  take {i + 1}/{n_trials}: " + ", ".join(
-                f"{k} {v:.2f} (best {best_seen[k]:.2f})" for k, v in losses.items()))
+
+            def split(k: str) -> str:
+                rl = per_region.get(k, [])
+                return f" [{'/'.join(f'{x:.2f}' for x in rl)}]" if len(rl) > 1 else ""
+            self.state.log("tone", {"trial": i, "losses": losses, "per_region": dict(per_region)})
+            self.echo(f"  trial {i + 1}/{n_trials}: " + ", ".join(
+                f"{k} {v:.2f}{split(k)} (best {best_seen[k]:.2f})" for k, v in losses.items()))
 
         run_lockstep(searches, n_trials, evaluate, on_round)
         final = []
@@ -545,9 +562,12 @@ class Project:
             else:
                 self.echo(f"  {t.name}: loss {l0:.2f} -> {l1:.2f}")
 
+    def _region_losses(self, feats: list[Features], t: TrackSpec, region_ids: list[int]) -> list[float]:
+        return [float(tone_loss(f, self.ref_features(i, t.stem), t.role)["total"])
+                for f, i in zip(feats, region_ids)]
+
     def _mean_loss(self, feats: list[Features], t: TrackSpec, region_ids: list[int]) -> float:
-        return float(np.mean([tone_loss(f, self.ref_features(i, t.stem), t.role)["total"]
-                              for f, i in zip(feats, region_ids)]))
+        return float(np.mean(self._region_losses(feats, t, region_ids)))
 
     # -- pan --------------------------------------------------------------
     def stage_pan(self) -> None:

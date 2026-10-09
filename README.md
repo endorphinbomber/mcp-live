@@ -106,7 +106,9 @@ any earlier state back into Live.
 ### Time budget
 
 Takes are recorded in real time. One 8-bar region at 120 BPM is 16 s, so 40 tone trials take about
-11 minutes, and a full `match` usually takes 20-40 minutes. You can leave Live alone while it runs,
+11 minutes, and a full `match` usually takes 20-40 minutes. `tone_regions` multiplies this: every trial records each
+tone region in turn and is scored on the average, so 60 trials with `tone_regions = 2` are 120 takes.
+`tone_regions` can't exceed `[analysis] regions` (re-run `analyze` after raising that). You can leave Live alone while it runs,
 but don't touch the transport.
 
 ### Saving presets and the template

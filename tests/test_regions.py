@@ -138,6 +138,6 @@ def test_slightly_late_recording_is_padded_too_late_is_retaken(proj):
 def test_playhead_that_will_not_move_is_explained(proj):
     p, fake = proj
     fake.jump_fails = True
-    with pytest.raises(LiveError, match="didn't move to beat"):
+    with pytest.raises(LiveError, match="didn't move the playhead to beat"):
         p.live.record(["Bass"], REGION.start_beat, REGION.end_beat)
     assert not fake.playing

@@ -58,12 +58,15 @@ def tonematch_discover() -> str:
 
 
 @mcp.tool()
-def tonematch_match(stages: str = ",".join(DEFAULT_STAGES), trials: int = 0) -> str:
+def tonematch_match(stages: str = ",".join(DEFAULT_STAGES), trials: int = 0, vocals: bool = False) -> str:
     """Run closed-loop matching stages (comma list of levels,tone,eq,pan,master). Each take is
-    recorded in real time, so the tone stage takes about trials x region length."""
+    recorded in real time, so the tone stage takes about trials x region length.
+    vocals=True: the master stage matches the original minus its vocals, leaving room for a singer."""
     def go(p: Project):
         if trials:
             p.cfg.match["tone_trials"] = trials
+        if vocals:
+            p.vocal_space = True
         p.match([s.strip() for s in stages.split(",") if s.strip()])
         return p.applied()
     return _run(go)

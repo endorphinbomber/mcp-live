@@ -85,8 +85,9 @@ def write_report(project) -> Path:
     last = st.get("last_render", {})
     rows = []
     sections = []
+    master_stem = "instrumental" if st.get("applied", {}).get("master", {}).get("target") == "instrumental" else "mix"
     for t in [*cfg.tracks, None]:
-        name, stem = (t.name, t.stem) if t else ("Master", "mix")
+        name, stem = (t.name, t.stem) if t else ("Master", master_stem)
         ref_d = an.get("features", {}).get("0", {}).get(stem)
         if not ref_d:
             continue

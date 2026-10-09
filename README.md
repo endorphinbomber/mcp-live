@@ -80,7 +80,25 @@ What each stage does:
 | `tone` | One Optuna (TPE) search per track, run side by side: every take sets all tracks' candidates and records them in **one** real-time pass. Each amp option is tried first, then the search narrows in. Loss = third-octave spectral-shape distance + distortion density (spectral flatness) + crest/dynamics. |
 | `eq` | Fits the remaining spectral difference to up to 6 EQ Eight bands per track (±6 dB, least squares). Re-measures and reverts any track it made worse. |
 | `pan` | Doubles: solves the pan that reproduces the reference guitar stem's side/mid ratio. Single sources: pan from L/R balance. |
-| `master` | Master EQ Eight (gentle, ±3 dB), then Limiter gain until the mix matches the reference loudness. |
+| `master` | Master EQ Eight (gentle, ±3 dB), then Limiter gain until the mix matches the reference loudness (with `+vocals`: the original minus its vocals). |
+
+### Leaving room for vocals: `+vocals`
+
+Your rendition has no singer, so by default the master stage makes it sound as full and as loud as the
+whole song. That pushes the vocal range (roughly 200 Hz-5 kHz) up and drives the limiter harder to make up
+for the missing voice. To keep the space the vocal had in the original, run:
+
+```bash
+tonematch match +vocals                  # or: tonematch match --vocals
+tonematch match --stages master +vocals  # only redo the master
+```
+
+With `+vocals` the master stage targets the **original instrumental**: the reference minus its separated
+vocal stem (Demucs makes one). The master EQ copies that tonal balance, and the limiter aims for its
+lower loudness, which leaves the headroom the vocal used. The per-instrument stages already compare each
+track with its own stem, so they work the same with or without `+vocals`. To always use it, set
+`leave_vocal_space = true` under `[match]`. With `separator = "none"`, add `vocals = "..."` to
+`[analysis].stems`.
 
 Every stage saves a snapshot under `work/history/`. `tonematch reapply work/history/<file>.json` pushes
 any earlier state back into Live.

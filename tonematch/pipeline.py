@@ -50,6 +50,7 @@ class Project:
         self._stage = ""
         self._rig: dict[str, int] | None = None
         self._reuse_tracks = bool(cfg.match.get("reuse_recording_tracks", True))
+        self.vocal_space = bool(cfg.match.get("leave_vocal_space", False))
 
     # ----------------------------------------------------------------- helpers
     @property
@@ -79,6 +80,25 @@ class Project:
 
     def regions(self) -> list[align_mod.Region]:
         return [align_mod.Region(**r) for r in self.state["analysis"]["regions"]]
+
+    def ref_mix_features(self, region_i: int) -> Features:
+        """What the master stage aims for: the full reference mix, or with `vocal_space` the
+        original instrumental (reference minus the separated vocals), which keeps the room and
+        headroom the vocal had."""
+        if not self.vocal_space:
+            return self.ref_features(region_i, "mix")
+        per = self.state["analysis"]["features"]
+        if "instrumental" not in per[str(region_i)]:
+            vocals = self.state["analysis"].get("stems", {}).get("vocals")
+            if not vocals or not Path(vocals).exists():
+                raise ValueError("+vocals needs the separated vocals: use separator = \"demucs\", or add "
+                                 "vocals = \"...\" under [analysis].stems, then run `tonematch analyze` again.")
+            instrumental = _minus(load_audio(self.cfg.path("reference")), load_audio(vocals))
+            for i, r in enumerate(self.regions()):
+                per[str(i)]["instrumental"] = analyze_audio(
+                    segment(instrumental, r.ref_start_s, r.ref_end_s)).to_dict()
+            self.state.save()
+        return Features.from_dict(per[str(region_i)]["instrumental"])
 
     def ref_features(self, region_i: int, stem: str) -> Features:
         return Features.from_dict(self.state["analysis"]["features"][str(region_i)][stem])
@@ -152,10 +172,13 @@ class Project:
             alignment.scale = float(a["scale"])
         regions = align_mod.pick_regions(song, alignment, len(ref) / ANALYSIS_SR,
                                          bars=int(a.get("region_bars", 8)), count=int(a.get("regions", 2)))
+        instrumental = _minus(ref, load_audio(stems["vocals"])) if "vocals" in stems else None
         features: dict[str, dict] = {}
         for i, r in enumerate(regions):
             per = {s: analyze_audio(segment(stem_audio[s], r.ref_start_s, r.ref_end_s)).to_dict() for s in needed}
             per["mix"] = analyze_audio(segment(ref, r.ref_start_s, r.ref_end_s)).to_dict()
+            if instrumental is not None:
+                per["instrumental"] = analyze_audio(segment(instrumental, r.ref_start_s, r.ref_end_s)).to_dict()
             features[str(i)] = per
             self.echo(f"Region {i + 1}: beats {r.start_beat:g}-{r.end_beat:g} "
                       f"(ref {r.ref_start_s:.1f}-{r.ref_end_s:.1f}s), mix {per['mix']['lufs']:.1f} LUFS")
@@ -585,7 +608,11 @@ class Project:
     # -- master -----------------------------------------------------------
     def stage_master(self) -> None:
         regions = list(range(len(self.regions())))
-        ref_mix = [self.ref_features(i, "mix") for i in regions]
+        ref_mix = [self.ref_mix_features(i) for i in regions]
+        target_name = "original instrumental" if self.vocal_space else "reference"
+        if self.vocal_space:
+            self.echo("  master: target = original instrumental (reference minus vocals), leaving room for vocals")
+        self.applied().setdefault("master", {})["target"] = "instrumental" if self.vocal_space else "mix"
         feats = self.render_master(regions)
         has_eq = self._master_index("EQ Eight") is not None
         has_limiter = self._master_index("Limiter") is not None
@@ -611,7 +638,7 @@ class Project:
                 feats = self.render_master(regions)
                 mix_lufs = float(np.mean([f.lufs for f in feats]))
                 delta = target_lufs - mix_lufs
-                self.echo(f"  master: {mix_lufs:.1f} LUFS vs reference {target_lufs:.1f} (limiter gain {gain:+.1f} dB)")
+                self.echo(f"  master: {mix_lufs:.1f} LUFS vs {target_name} {target_lufs:.1f} (limiter gain {gain:+.1f} dB)")
                 if last is not None and abs(gain - last[0]) > 0.1:
                     slope = float(np.clip((mix_lufs - last[1]) / (gain - last[0]), 0.15, 1.0))
                 if abs(delta) < 0.5:
@@ -621,7 +648,7 @@ class Project:
                 gain = self.live.set_display(ref, gain_param, gain, "dB")
                 self.applied()["master"]["limiter_gain_db"] = gain
             if abs(delta) >= 0.5:
-                self.echo(f"  master: stopped {delta:+.1f} dB short of the reference loudness - the "
+                self.echo(f"  master: stopped {delta:+.1f} dB short of the {target_name} loudness - the "
                           "reference is likely more compressed; lower the Glue threshold and re-run `--stages master`.")
         self.state.log("master", {"lufs": feats[0].lufs, "crest_db": feats[0].crest_db})
 
@@ -686,6 +713,12 @@ def prepare_notes(song: Song, part: Part, t: TrackSpec) -> tuple[list[Note], str
     if t.transpose:
         summary = ", ".join(x for x in (f"transposed {t.transpose:+d} semitones", summary) if x)
     return notes, summary
+
+
+def _minus(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """a - b over their common length (Demucs stems can be a few samples shorter)."""
+    n = min(len(a), len(b))
+    return a[:n] - b[:n]
 
 
 def _merge_eq(prev: list[EqBand], new: list[EqBand], max_bands: int = EQ_BANDS) -> list[EqBand]:

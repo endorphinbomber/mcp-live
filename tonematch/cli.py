@@ -145,11 +145,20 @@ def cmd_discover(args) -> int:
     return 0
 
 
+MATCH_OPTIONS = {"+vocals": "master leaves the original's room and headroom for vocals"}
+
+
 def cmd_match(args) -> int:
+    unknown = [w for w in args.options if w.lower() not in MATCH_OPTIONS]
+    if unknown:
+        raise ValueError(f"unknown option {' '.join(unknown)}; available: "
+                         + "; ".join(f"{k} ({v})" for k, v in MATCH_OPTIONS.items()))
     stages = args.stages.split(",") if args.stages else None
     p = _project(args)
     if args.trials:
         p.cfg.match["tone_trials"] = args.trials
+    if args.vocals or "+vocals" in (w.lower() for w in args.options):
+        p.vocal_space = True
     p.match(stages)
     from .export.report import write_report
     print(f"Report: {write_report(p)}")
@@ -207,6 +216,10 @@ def main(argv: list[str] | None = None) -> int:
     m = sub.add_parser("match", help="run matching stages (closed loop, real-time takes)")
     m.add_argument("--stages", help="comma list: levels,tone,eq,pan,master (default: full sequence)")
     m.add_argument("--trials", type=int, help="override tone_trials")
+    m.add_argument("--vocals", action="store_true",
+                   help="same as +vocals: master matches the original minus its vocals, leaving room for a singer")
+    m.add_argument("options", nargs="*", metavar="+vocals",
+                   help="+vocals: leave the original's room for vocals")
     m.set_defaults(fn=cmd_match)
     sub.add_parser("export", help="write presets, mixer sheet and save checklist").set_defaults(fn=cmd_export)
     sub.add_parser("report", help="write out/report.html").set_defaults(fn=cmd_report)

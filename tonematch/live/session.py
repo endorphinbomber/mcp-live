@@ -145,6 +145,23 @@ class LiveSession:
         n = self.c.send("get_session_info").get("track_count", 0)
         return [self.c.send("get_track_info", track_index=i).get("name", "") for i in range(n)]
 
+    def disarm_all(self) -> list[str]:
+        """Record-disarm every track (Live arms the selected MIDI track by itself). Returns the
+        names that were armed; tracks that can't be armed (groups) are skipped."""
+        disarmed = []
+        n = self.c.send("get_session_info").get("track_count", 0)
+        for i in range(n):
+            info = self.c.send("get_track_info", track_index=i)
+            if info.get("arm") is False:
+                continue
+            try:
+                self.c.send("set_track_arm", track_index=i, arm=False)
+            except LiveError:
+                continue
+            if info.get("arm"):
+                disarmed.append(info.get("name", f"track {i + 1}"))
+        return disarmed
+
     def track_index(self, name: str) -> int:
         names = self.track_names()
         if name not in names:

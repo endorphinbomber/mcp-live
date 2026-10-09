@@ -309,11 +309,15 @@ class FakeLive:
             return {}
         if cmd == "get_track_info":
             t = self.t(p["track_index"])
-            return {"index": p["track_index"], "name": t.name,
+            return {"index": p["track_index"], "name": t.name, "arm": t.arm,
                     "devices": [{"index": i, "name": d[0]} for i, d in enumerate(t.devices)],
                     "clip_slots": [{"index": 0, "has_clip": t.session_clip is not None}]}
         if cmd in ("create_midi_track", "create_audio_track"):
             self.tracks.append(Track(f"{len(self.tracks) + 1}-Track", cmd == "create_midi_track"))
+            if cmd == "create_midi_track":                 # Live arms the selected MIDI track
+                for t in self.tracks:
+                    t.arm = t.arm and not t.midi
+                self.tracks[-1].arm = True
             return {"index": len(self.tracks) - 1}
         if cmd == "set_track_name":
             self.t(p["track_index"]).name = p["name"]
@@ -432,7 +436,7 @@ class FakeLive:
 
     def _finish_recording(self) -> None:
         for t in self.tracks:
-            if not t.arm:
+            if not t.arm or t.midi:
                 continue
             if t.input_type == "Resampling":
                 audio = self.master_out()

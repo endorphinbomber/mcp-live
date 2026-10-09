@@ -232,6 +232,7 @@ class Project:
                                 f"and monitoring to In ({e}).")
                 live.set_mixer(oidx, pan=0.0, unity=True)
         build["master"] = self._load_master(cfg.master_chain)
+        self._disarm()
         self._track_idx = None
         self.state["build"] = build
         self.state.checkpoint("build")
@@ -387,10 +388,25 @@ class Project:
         for st in stages or DEFAULT_STAGES:
             if st not in handlers:
                 raise ValueError(f"Unknown stage {st!r}; choose from {sorted(handlers)}")
-            self.echo(f"== stage: {st}")
-            self._stage = st
-            handlers[st]()
-            self.state.checkpoint(st)
+        try:
+            for st in stages or DEFAULT_STAGES:
+                self.echo(f"== stage: {st}")
+                self._stage = st
+                handlers[st]()
+                self.state.checkpoint(st)
+        finally:
+            self._stage = ""
+            self._disarm()
+
+    def _disarm(self) -> None:
+        """Leave no track record-armed (Live arms the selected MIDI track on its own)."""
+        try:
+            disarmed = self.live.disarm_all()
+        except (LiveError, OSError) as e:
+            self.echo(f"  could not check record-arm buttons ({e}) - disarm the tracks by hand")
+            return
+        if disarmed:
+            self.echo(f"  disarmed: {', '.join(disarmed)}")
 
     # -- levels -----------------------------------------------------------
     def _set_gain(self, track: str, gain_db: float) -> float:

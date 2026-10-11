@@ -112,7 +112,8 @@ def test_closed_loop(project):
     assert gl["choices"]["mic_l"] == ["Dynamic 57", "Condenser 414", "Ribbon 121"]
     assert gl["missing"] == []
     dr = report["Drums/kontakt_drums"]
-    assert dr["resolved"]["toms"] == "#003 + #004 + #005" and dr["missing"] == []
+    assert dr["resolved"]["toms"] == "#003 + #004 + #005"
+    assert sorted(dr["missing"]) == ["comp_power", "eq_power", "room_width"]   # only exist by name
 
     def guitar_loss():
         feats = proj.render([proj.cfg.track("Gtr L")], [0])["Gtr L"][0]

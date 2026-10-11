@@ -38,6 +38,14 @@ class LiveParam:
         span = self.max - self.min
         return (native - self.min) / span if span else 0.0
 
+    def switch_options(self) -> list[tuple[float, str]]:
+        """Off/on as native values: the two ends of the range (plug-in switches are often
+        exposed as plain 0..1 parameters)."""
+        if self.is_quantized and len(self.choices()) >= 2:
+            opts = self.choices()
+            return [(float(opts[0][0]), opts[0][1]), (float(opts[-1][0]), opts[-1][1])]
+        return [(self.min, "Off"), (self.max, "On")]
+
     def choices(self) -> list[tuple[int, str]]:
         """(native value, label) for each option of a quantized parameter."""
         lo, hi = int(round(self.min)), int(round(self.max))
@@ -92,28 +100,35 @@ def expand_pattern(pattern: str, choices: dict[str, str]) -> list[str]:
 
 def resolve(spec: ParamSpec, params: list[LiveParam], choices: dict[str, str] | None = None,
             taken: set[int] | None = None) -> LiveParam | None:
-    """First alternative that matches wins; ties go to the shortest parameter name."""
+    """First pattern, then first alternative, that matches wins; ties go to the shortest name."""
     taken = taken or set()
-    for alt in expand_pattern(spec.pattern, choices or {}):
-        rx = re.compile(alt, re.I)
-        hits = [p for p in params if p.index not in taken and rx.search(p.name)]
-        if spec.kind == "categorical":
-            hits = [p for p in hits if p.is_quantized and p.max > p.min]
-        if hits:
-            return min(hits, key=lambda p: (len(p.name), p.index))
+    for pattern in spec.patterns():
+        for alt in expand_pattern(pattern, choices or {}):
+            rx = re.compile(alt, re.I)
+            hits = [p for p in params if p.index not in taken and rx.search(p.name)]
+            if spec.kind == "categorical":
+                hits = [p for p in hits if p.is_quantized and p.max > p.min]
+            elif spec.kind == "switch":
+                hits = [p for p in hits if p.max > p.min]
+            if hits:
+                return min(hits, key=lambda p: (len(p.name), p.index))
     return None
 
 
 def resolve_group(spec: ParamSpec, params: list[LiveParam],
                   choices: dict[str, str] | None = None) -> list[LiveParam]:
-    """All parameters matched by a group spec (any alternative), in index order."""
-    hits: dict[int, LiveParam] = {}
-    for alt in expand_pattern(spec.pattern, choices or {}):
-        rx = re.compile(alt, re.I)
-        for p in params:
-            if rx.search(p.name):
-                hits.setdefault(p.index, p)
-    return [hits[i] for i in sorted(hits)]
+    """All parameters matched by a group spec (any alternative), in index order. With several
+    patterns, the first one that matches anything is used (named and numbered never mix)."""
+    for pattern in spec.patterns():
+        hits: dict[int, LiveParam] = {}
+        for alt in expand_pattern(pattern, choices or {}):
+            rx = re.compile(alt, re.I)
+            for p in params:
+                if rx.search(p.name):
+                    hits.setdefault(p.index, p)
+        if hits:
+            return [hits[i] for i in sorted(hits)]
+    return []
 
 
 def resolve_all(specs: list[ParamSpec], params: list[LiveParam],

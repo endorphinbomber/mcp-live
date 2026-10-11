@@ -22,16 +22,20 @@ STOCK_DEVICES = {
 class ParamSpec:
     key: str
     pattern: str
-    kind: str = "continuous"          # "continuous" | "categorical"
+    kind: str = "continuous"          # "continuous" | "categorical" | "switch" (on/off, any parameter)
     range: tuple[float, float] = (0.0, 1.0)
     group: bool = False               # one knob drives every parameter the pattern matches
     span: float | None = None         # range = current value +/- span (normalized), instead of `range`
+    fallbacks: tuple[str, ...] = ()   # patterns tried in order when `pattern` matches nothing
+
+    def patterns(self) -> tuple[str, ...]:
+        return (self.pattern, *self.fallbacks)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "ParamSpec":
         kind = d.get("kind", "continuous")
-        if kind not in ("continuous", "categorical"):
-            raise ValueError(f"param {d.get('key')!r}: kind must be continuous or categorical")
+        if kind not in ("continuous", "categorical", "switch"):
+            raise ValueError(f"param {d.get('key')!r}: kind must be continuous, categorical or switch")
         lo, hi = d.get("range", (0.0, 1.0))
         if not 0.0 <= lo < hi <= 1.0:
             raise ValueError(f"param {d.get('key')!r}: range must satisfy 0 <= lo < hi <= 1")
@@ -40,8 +44,13 @@ class ParamSpec:
             raise ValueError(f"param {d.get('key')!r}: span must be between 0 and 1")
         if d.get("group") and kind != "continuous":
             raise ValueError(f"param {d.get('key')!r}: group only works for continuous knobs")
-        return cls(key=d["key"], pattern=d["pattern"], kind=kind, range=(float(lo), float(hi)),
-                   group=bool(d.get("group", False)), span=None if span is None else float(span))
+        pats = d["pattern"]
+        pats = [pats] if isinstance(pats, str) else list(pats)
+        if not pats or not all(isinstance(x, str) and x for x in pats):
+            raise ValueError(f"param {d.get('key')!r}: pattern must be a regex or a list of regexes")
+        return cls(key=d["key"], pattern=pats[0], kind=kind, range=(float(lo), float(hi)),
+                   group=bool(d.get("group", False)), span=None if span is None else float(span),
+                   fallbacks=tuple(pats[1:]))
 
     def bounds(self, current_u: float) -> tuple[float, float]:
         """Search range in normalized units, given the parameter's current value."""

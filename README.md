@@ -152,17 +152,23 @@ were found.
   - Pedals: OD (on/off, Dist, Tone, Level) and DRT (on/off, Dist, Filter, Vol).
   - Mics: the L/R mic type, Cab L/R Position and Distance, and the Cab R Level.
   - Left alone: Output, which the levels stage handles, plus the gate and the pans.
-- **MixWave Gojira** (Kontakt host-automation `#000…`):
-  - Mixer levels: kick1 `#000`, kick2 `#001`, snare `#002`, hi-hat `#006`, overheads `#014`/`#013`,
-    room `#015`, monoroom `#012`.
-  - Moved together: toms `#003–#005`, and cymbals `#007–#011`.
-  - Also tuned: overhead width `#030`, snare reverb `#050`.
+- **MixWave Gojira** (Kontakt host-automation). Kontakt shows these parameters either by name ("Kick 1
+  Volume", …) or as numbered slots (`#000`, …), depending on whether the library was loaded before they were
+  assigned. The named parameter is used when it exists, the numbered slot otherwise:
+  - Mixer levels: Kick 1/2 (`#000`/`#001`), Snare (`#002`), Hi-Hat (`#006`), Overhead (`#014`, plus `#013`),
+    Room (`#015`), Mono Room (`#012`).
+  - Moved together: Rack Tom 1/2 + Floor Tom (`#003–#005`), and Ride/Splash/Stack/China 1/2/Trash (`#007–#011`).
+  - Also tuned: Overhead Width (`#030`), snare reverb `#050`; with names only: Room Width, and EQ Power /
+    Compressor Power on/off.
+  - Left alone: Master Volume (the levels stage sets loudness) and the pans (the pan stage handles stereo).
   - Each knob only moves ±0.2 around the kit's current setting, so the kit's own mix is the starting point.
 - Each search starts from the plug-ins' current settings, so the result is never worse than where it
   began.
 
 Knob options: `range = [lo, hi]` or `span = 0.2` (normalized 0–1), `kind = "categorical"` for
-switches and selectors, and `group = true` to drive several parameters with one knob.
+selectors, `kind = "switch"` for on/off (also when the plug-in exposes it as a plain 0–1 value), and
+`group = true` to drive several parameters with one knob. `pattern` can be a list, tried in order: the
+first one that matches anything is used.
 `tonematch init --force` rewrites your `tonematch.toml` from the current defaults. It keeps your
 `[project]` and `[analysis]` settings and saves the old file as `tonematch.toml.bak`.
 

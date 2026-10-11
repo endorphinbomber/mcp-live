@@ -318,8 +318,9 @@ class Project:
                     "resolved": {r.spec.key: (" + ".join(m.name for m in r.members) if r.members else r.param.name)
                                  for r in resolved},
                     "missing": [m.key for m in missing],
-                    "choices": {r.spec.key: [lbl for _, lbl in r.param.choices()]
-                                for r in resolved if r.spec.kind == "categorical"},
+                    "choices": {r.spec.key: [lbl for _, lbl in (r.param.choices() if r.spec.kind == "categorical"
+                                                                 else r.param.switch_options())]
+                                for r in resolved if r.spec.kind in ("categorical", "switch")},
                 }
             for need in ("EQ Eight", "Utility"):
                 if need in t.chain:
@@ -478,7 +479,7 @@ class Project:
             for ps in spec.params:
                 # Resolvable now, or after a categorical choice fills its {placeholder}.
                 found = resolve_group(ps, params) if ps.group else resolve(ps, params)
-                if found or "{" in ps.pattern:
+                if found or "{" in "".join(ps.patterns()):
                     knobs.append(Knob(t.name, key, ps, params))
         for out in self.out_tracks(t):
             params = self.live.device_params(self.device_ref(out, "Utility"))

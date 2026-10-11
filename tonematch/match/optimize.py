@@ -70,7 +70,7 @@ class ToneSearch:
         than where it started."""
         current: dict = {}
         for knob in self.knobs:
-            if knob.db_range is not None or "{" in knob.spec.pattern:
+            if knob.db_range is not None or "{" in "".join(knob.spec.patterns()):
                 continue
             members = (resolve_group(knob.spec, knob.params) if knob.spec.group
                        else [x for x in [resolve(knob.spec, knob.params)] if x is not None])
@@ -79,6 +79,9 @@ class ToneSearch:
             p = members[0]
             if knob.spec.kind == "categorical":
                 current[self._pname(knob, None)] = int(round(p.value))
+            elif knob.spec.kind == "switch":
+                current[self._pname(knob, None)] = min((v for v, _ in p.switch_options()),
+                                                       key=lambda v: abs(v - p.value))
             else:
                 lo, hi = knob.spec.bounds(p.normalized(p.value))
                 current[self._pname(knob, None)] = min(hi, max(lo, p.normalized(p.value)))
@@ -120,13 +123,18 @@ class ToneSearch:
                 label = dict(options)[native]
                 dev_choices[knob.spec.key] = label
                 cand.values.append(Setting(knob.track, knob.device, p.index, float(native), label))
+            elif knob.spec.kind == "switch":
+                options = p.switch_options()
+                native = trial.suggest_categorical(self._pname(knob, None), [v for v, _ in options])
+                cand.values.append(Setting(knob.track, knob.device, p.index, float(native),
+                                           f"{p.name}={dict(options)[native]}"))
             elif knob.db_range is not None:
                 db = trial.suggest_float(self._pname(knob, None), *knob.db_range)
                 cand.values.append(Setting(knob.track, knob.device, p.index, db, f"{p.name}={db:+.1f} dB",
                                            is_db=True))
             else:
                 # Conditional knobs (pattern uses {placeholders}) get one distribution per choice.
-                dep = "+".join(dev_choices[k] for k in sorted(dev_choices) if "{" + k + "}" in knob.spec.pattern)
+                dep = "+".join(dev_choices[k] for k in sorted(dev_choices) if "{" + k + "}" in "".join(knob.spec.patterns()))
                 # `span` knobs search around the value the parameter had when the knob was made.
                 lo, hi = knob.spec.bounds(p.normalized(p.value))
                 u = trial.suggest_float(self._pname(knob, dep or None), lo, hi)

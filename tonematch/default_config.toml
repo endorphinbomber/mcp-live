@@ -95,25 +95,32 @@ chain = ["EQ Eight", "Glue Compressor", "Limiter"]
 [plugins.kontakt_drums]
 search = "Kontakt"               # matched against Live's Plug-ins browser; see `tonematch plugins kontakt`
 # uri = "..."                    # or pin the exact browser URI printed by `tonematch plugins`
-# MixWave Gojira mixer, exposed by Kontakt as host-automation parameters #000...
+# MixWave Gojira mixer, exposed by Kontakt as host-automation parameters. Kontakt shows them
+# by name ("Kick 1 Volume", ...) or as numbered slots (#000, ...), depending on whether the
+# library was loaded before they were assigned. A list of patterns is tried in order: the
+# named parameter is used when it exists, the numbered slot otherwise.
 # span = search +/- that much (normalized) around the kit's current setting.
 # group = true moves every matched parameter together (toms, cymbals).
 params = [
-  { key = "kick1",     pattern = "^#000$", span = 0.2 },
-  { key = "kick2",     pattern = "^#001$", span = 0.2 },
-  { key = "snare",     pattern = "^#002$", span = 0.2 },
-  { key = "toms",      pattern = "^#00[345]$", span = 0.2, group = true },
-  { key = "hihat",     pattern = "^#006$", span = 0.2 },
-  { key = "cymbals",   pattern = "^#0(0[789]|1[01])$", span = 0.2, group = true },
-  { key = "monoroom",  pattern = "^#012$", span = 0.2 },
+  { key = "kick1",     pattern = ["^Kick 1 Volume$", "^#000$"], span = 0.2 },
+  { key = "kick2",     pattern = ["^Kick 2 Volume$", "^#001$"], span = 0.2 },
+  { key = "snare",     pattern = ["^Snare Volume$", "^#002$"], span = 0.2 },
+  { key = "toms",      pattern = ["^(Rack Tom [12]|Floor Tom) Volume$", "^#00[345]$"], span = 0.2, group = true },
+  { key = "hihat",     pattern = ["^Hi-?Hat Volume$", "^#006$"], span = 0.2 },
+  { key = "cymbals",   pattern = ["^(Ride|Splash|Stack|China [12]|Trash) Volume$", "^#0(0[789]|1[01])$"], span = 0.2, group = true },
+  { key = "monoroom",  pattern = ["^Mono Room Volume$", "^#012$"], span = 0.2 },
   { key = "overhead2", pattern = "^#013$", span = 0.2 },
-  { key = "overhead",  pattern = "^#014$", span = 0.2 },
-  { key = "room",      pattern = "^#015$", span = 0.2 },
-  { key = "oh_width",  pattern = "^#030$", span = 0.25 },
+  { key = "overhead",  pattern = ["^Overhead Volume$", "^#014$"], span = 0.2 },
+  { key = "room",      pattern = ["^Room Volume$", "^#015$"], span = 0.2 },
+  { key = "oh_width",  pattern = ["^Overhead Width$", "^#030$"], span = 0.25 },
+  { key = "room_width", pattern = "^Room Width$", span = 0.25 },
+  { key = "eq_power",  pattern = "^EQ Power$", kind = "switch" },
+  { key = "comp_power", pattern = "^Compr\\w* Power$", kind = "switch" },
   { key = "snare_verb", pattern = "^#050$", span = 0.2 },
 ]
-# Not touched: #032 master (the levels stage sets loudness), pans, widths other than the
-# overheads, tom reverb #052, and #034 (master comp / room width).
+# Not touched: Master Volume / #032 (the levels stage sets loudness), pans (kit placement - the
+# tone match doesn't measure stereo, the pan stage handles it), Mono Room / Trash width, tom reverb #052.
+# room_width, eq_power and comp_power only exist with the named parameters (MISSING otherwise - fine).
 
 [plugins.kontakt_bass]
 search = "Kontakt"

@@ -90,3 +90,70 @@ def test_init_force_refreshes_defaults_and_keeps_project(tmp_path, capsys):
     assert [t["name"] for t in new["tracks"]] == ["Drums", "Bass", "Gtr L", "Gtr R"]
     assert (tmp_path / "tonematch.toml.bak").read_text().count("Old") == 1
     load_config(cfg)                                                     # still a valid config
+
+
+NAMED = ["Kick 1 Volume", "Kick 2 Volume", "Snare Volume", "Rack Tom 1 Volume", "Rack Tom 2 Volume",
+         "Floor Tom Volume", "Hi-Hat Volume", "Overhead Volume", "Room Volume", "Room Width",
+         "Overhead Width", "Mono Room Volume", "Ride Volume", "Splash Volume", "Stack Volume",
+         "China 1 Volume", "China 2 Volume", "Trash Volume", "Master Volume", "Hi-Hat Pan"]
+
+
+def _discover_drums(tmp_path, monkeypatch, named):
+    from tests.fake_live import P
+    monkeypatch.setattr("tonematch.live.session.time.sleep", lambda s: None)
+    server = FakeLiveServer()
+    write_midi(tmp_path / "song.mid")
+    (tmp_path / "tonematch.toml").write_text('[project]\nmidi = "song.mid"\n')
+    try:
+        p = Project(load_config(tmp_path / "tonematch.toml"), LiveClient(port=server.port), echo=lambda m: None)
+        p.build()
+        if named:   # Kontakt keeps the numbered slots and adds the library's names
+            drums = next(t for t in server.live.tracks if t.name == "Drums")
+            _, params = drums.devices[0]
+            params += [P(n, 0, 1, 0.5) for n in NAMED]
+            params += [P("EQ Power", 0, 1, 0.0), P("Compressor Power", 0, 1, 1.0)]   # plain 0..1, like Kontakt
+        return p.discover()["Drums/kontakt_drums"]
+    finally:
+        server.close()
+
+
+def test_named_mixwave_parameters_win_over_numbered_slots(tmp_path, monkeypatch):
+    report = _discover_drums(tmp_path, monkeypatch, named=True)
+    r = report["resolved"]
+    assert r["kick1"] == "Kick 1 Volume" and r["snare"] == "Snare Volume"
+    assert r["toms"] == "Rack Tom 1 Volume + Rack Tom 2 Volume + Floor Tom Volume"     # not mixed with #003-5
+    assert r["cymbals"].count("+") == 5 and "#0" not in r["cymbals"]
+    assert r["oh_width"] == "Overhead Width" and r["room_width"] == "Room Width"
+    assert r["overhead2"] == "#013"                                                   # numbered only
+    assert r["eq_power"] == "EQ Power" and report["choices"]["eq_power"] == ["Off", "On"]
+    assert r["comp_power"] == "Compressor Power"
+    assert report["missing"] == []
+    assert "Master Volume" not in r.values() and "Hi-Hat Pan" not in r.values()
+
+
+def test_numbered_slots_are_used_when_no_names(tmp_path, monkeypatch):
+    report = _discover_drums(tmp_path, monkeypatch, named=False)
+    r = report["resolved"]
+    assert r["kick1"] == "#000" and r["toms"] == "#003 + #004 + #005" and r["oh_width"] == "#030"
+    assert sorted(report["missing"]) == ["comp_power", "eq_power", "room_width"]
+
+
+def test_switch_knob_tries_off_and_on_starting_from_current():
+    spec = ParamSpec.from_dict({"key": "eq_power", "pattern": "^EQ Power$", "kind": "switch"})
+    params = [LiveParam(0, "EQ Power", 0.0, 1.0, 1.0, False, [])]
+    search = ToneSearch("Drums", [Knob("Drums", "kontakt_drums", spec, params)], seed=3)
+    seen = []
+    for _ in range(6):
+        cand = search.ask()
+        seen.append(cand.values[0].value)
+        search.tell(cand, 1.0)
+    assert seen[0] == 1.0 and set(seen) <= {0.0, 1.0}
+
+
+def test_pattern_list_parses_and_string_still_works():
+    a = ParamSpec.from_dict({"key": "k", "pattern": ["^Kick 1 Volume$", "^#000$"]})
+    assert a.patterns() == ("^Kick 1 Volume$", "^#000$")
+    b = ParamSpec.from_dict({"key": "k", "pattern": "^#000$"})
+    assert b.patterns() == ("^#000$",)
+    with pytest.raises(ValueError, match="list of regexes"):
+        ParamSpec.from_dict({"key": "k", "pattern": []})

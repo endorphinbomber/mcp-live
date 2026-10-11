@@ -111,8 +111,8 @@ tone region in turn and is scored on the average, so 60 trials with `tone_region
 `tone_regions` can't exceed `[analysis] regions` (re-run `analyze` after raising that).
 
 `analyze` picks the busiest section first, then the sections that sound most different from it (palm-muted
-vs open, register, loudness, low end vs brightness), at least one region length apart. It prints why each
-was picked. With `tone_regions = 1` the busiest is used. If the song changes tempo, Live is switched to each
+vs open, register, loudness, low end vs brightness), at least one region length apart and at least 3 s into the song (Live needs a short
+run-up before it can record). It prints why each was picked. With `tone_regions = 1` the busiest is used. If the song changes tempo, Live is switched to each
 region's own tempo while recording it, and set back to the song's first tempo afterwards. You can leave Live alone while it runs,
 but don't touch the transport.
 

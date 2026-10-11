@@ -19,6 +19,8 @@ UNITY_FADER = 0.85          # Live mixer volume value for 0 dB
 MONITOR_OFF = 2
 MAX_RECORD_SECONDS = 300.0
 LEAD_SECONDS = 1.0      # play this long before switching recording on
+MIN_WINDOW_SECONDS = 0.3
+MIN_RUNUP_SECONDS = 0.5  # a region needs at least this much song before it to be recorded
 
 
 class TakeFailed(LiveError):
@@ -426,7 +428,8 @@ class LiveSession:
         starts a little before `at_beat`; returns the beat where it was switched on."""
         lead = max(1.0, math.ceil(LEAD_SECONDS * tempo / 60.0))
         cue = max(0.0, at_beat - lead)
-        window_end = at_beat if at_beat > cue else at_beat + 0.25
+        # Live answers position queries via its main thread (tens of ms each): keep the window wide.
+        window_end = max(at_beat, cue + MIN_WINDOW_SECONDS * tempo / 60.0)
         self.c.send("set_record_mode", enabled=False)
         self.c.send("continue_playing")
         seen = None

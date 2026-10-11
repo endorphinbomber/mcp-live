@@ -19,7 +19,7 @@ from .audio import ANALYSIS_SR, load_audio, segment
 from .config import GP_SUFFIXES, Config, ParamSpec, TrackSpec
 from .live.client import LiveClient, LiveError
 from .live.params import LiveParam, resolve, resolve_all, resolve_group
-from .live.session import DeviceRef, LiveSession, TakeFailed
+from .live.session import MIN_RUNUP_SECONDS, DeviceRef, LiveSession, TakeFailed
 from .match import levels as lv
 from .match.eqfit import EqBand, fit_eq
 from .match.loss import tone_loss, weights_for
@@ -76,6 +76,18 @@ class Project:
         if analysed and analysed != current:
             self.echo(f"WARNING: analysis was made from {analysed}, but the song file is now {current}. "
                       "Re-run `tonematch analyze` - the comparison regions depend on it.")
+
+    def check_regions_recordable(self) -> None:
+        """Live has to be playing before it can record, so a region needs some song before it."""
+        if "analysis" not in self.state.data:
+            return
+        for i, r in enumerate(self.regions()):
+            at = r.start_beat - (1.0 if r.start_beat >= 1.0 else 0.0)
+            if at * 60.0 / self.region_bpm(r) < MIN_RUNUP_SECONDS:
+                raise ValueError(
+                    f"Region {i + 1} starts at the very beginning of the song (beat {r.start_beat:g}); Live needs "
+                    "a short run-up before it can record there. Run `tonematch analyze` again - regions now "
+                    f"start at least {align_mod.MIN_START_S:g} s in (the Demucs stems are reused).")
 
     def regions(self) -> list[align_mod.Region]:
         return [align_mod.Region(**r) for r in self.state["analysis"]["regions"]]
@@ -410,6 +422,7 @@ class Project:
         for st in stages or DEFAULT_STAGES:
             if st not in handlers:
                 raise ValueError(f"Unknown stage {st!r}; choose from {sorted(handlers)}")
+        self.check_regions_recordable()
         try:
             for st in stages or DEFAULT_STAGES:
                 self.echo(f"== stage: {st}")

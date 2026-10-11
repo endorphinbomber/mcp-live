@@ -33,11 +33,12 @@ def test_second_region_contrasts_and_keeps_a_gap():
     assert first.why == "busiest section" and first.end_beat <= 64          # busier, palm-muted verse
     assert second.start_beat >= 64 and second.why.startswith("contrast:")   # the open chorus
     assert "more open" in second.why
+    assert all(song.beats_to_seconds(r.start_beat) >= 3.0 for r in regions)   # busiest verse begins at 0
     assert abs(second.start_beat - first.end_beat) >= 16 or abs(first.start_beat - second.end_beat) >= 16
 
 
 def test_gap_is_relaxed_when_the_song_is_short():
-    song = verse_chorus_song(bars=9)             # no room for a one-region gap
+    song = verse_chorus_song(bars=12)            # no room for a one-region gap after the 3 s start
     regions = pick_regions(song, Alignment(0.0, 1.0, 1.0), 1e6, bars=4, count=2)
     assert len(regions) == 2
 
@@ -141,3 +142,35 @@ def test_playhead_that_will_not_move_is_explained(proj):
     with pytest.raises(LiveError, match="didn't move the playhead to beat"):
         p.live.record(["Bass"], REGION.start_beat, REGION.end_beat)
     assert not fake.playing
+
+
+def test_match_explains_a_region_at_the_very_start(tmp_path, monkeypatch):
+    monkeypatch.setattr("tonematch.live.session.time.sleep", lambda s: None)
+    server = FakeLiveServer()
+    fake = server.live
+    write_midi(tmp_path / "song.mid")
+    (tmp_path / "tonematch.toml").write_text("""
+[project]
+reference = "ref.wav"
+midi = "song.mid"
+[analysis]
+separator = "none"
+stems = { drums = "stems/drums.wav", bass = "stems/bass.wav", guitar = "stems/guitar.wav" }
+region_bars = 2
+regions = 2
+offset_s = 0.0
+scale = 1.0
+""")
+    try:
+        p = Project(load_config(tmp_path / "tonematch.toml"), LiveClient(port=server.port), echo=lambda m: None)
+        p.build()
+        make_reference(fake, tmp_path)
+        p.analyze()
+        assert all(r.start_beat * 60 / p.region_bpm(r) >= 3.0 for r in p.regions())
+        p.state["analysis"]["regions"][1].update(start_beat=0.0, end_beat=8.0)   # an analysis made before
+        fake.commands.clear()
+        with pytest.raises(ValueError, match="Region 2 starts at the very beginning.*tonematch analyze"):
+            p.match(["levels"])
+        assert "continue_playing" not in fake.commands
+    finally:
+        server.close()

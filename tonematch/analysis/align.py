@@ -102,6 +102,7 @@ def align(song: Song, reference: np.ndarray, drums_part=None, max_offset_s: floa
 
 
 BANDS_HZ = ((20.0, 250.0), (250.0, 2000.0), (2000.0, 16000.0))
+MIN_START_S = 3.0      # room before a region for the pre-roll and Live's run-up to recording
 FEATURES = ("palm-muted", "busier", "higher notes", "louder", "more low end", "more mids", "brighter")
 
 
@@ -155,6 +156,7 @@ def pick_regions(song: Song, alignment: Alignment, ref_duration_s: float, bars: 
     """First the busiest window where every part plays; then, at least `gap_bars` (default: one
     region length) away from the others, the window that sounds most different from them
     (palm mutes vs open, register, density, loudness and band balance of the reference).
+    Regions start at least MIN_START_S into the song, so Live can be cued before them.
     Returned in that order, so `tone_regions = 1` uses the busiest one."""
     bpb = song.beats_per_bar()
     length = bars * bpb
@@ -174,6 +176,8 @@ def pick_regions(song: Song, alignment: Alignment, ref_duration_s: float, bars: 
         start += bpb
     if not cands:
         raise ValueError("No region of the MIDI maps inside the reference; check the alignment")
+    later = [c for c in cands if song.beats_to_seconds(c["a"]) >= MIN_START_S]
+    cands = later or cands
     best_cov = max(c["coverage"] for c in cands)
     full = [c for c in cands if c["coverage"] == best_cov]
     most = max(c["notes"] for c in full)
